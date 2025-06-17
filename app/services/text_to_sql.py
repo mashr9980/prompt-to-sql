@@ -8,6 +8,8 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 
+from .schema_store import SchemaVectorStore
+
 from ..schemas.query import QueryResponse
 from ..schemas.database import TableInfo
 from ..services.database import DatabaseService
@@ -29,28 +31,26 @@ class TextToSQLService:
                 temperature=settings.OPENAI_TEMPERATURE,
                 api_key=settings.OPENAI_API_KEY
             )
-            
+
             self.sql_db = SQLDatabase.from_uri(settings.DATABASE_URL)
-            
+
             self.toolkit = SQLDatabaseToolkit(db=self.sql_db, llm=self.llm)
             self.tools = self.toolkit.get_tools()
-            
-            self.system_message = self._create_system_message()
-            
-            self.agent = create_react_agent(
-                self.llm, 
-                self.tools, 
-                prompt=self.system_message
-            )
-            
+
+            # Build schema vector store for retrieval
+            self.schema_store = SchemaVectorStore(self.database_service)
+            self.schema_store.build()
+
+            self.base_system_message = self._create_system_message()
+
             logger.info("TextToSQLService initialized with LangChain SQL Agent")
             
         except Exception as e:
             logger.error(f"Failed to initialize TextToSQLService: {str(e)}")
-            self.agent = None
+            self.schema_store = None
     
-    def _create_system_message(self) -> str:
-        return f"""
+    def _create_system_message(self, schema_context: str = "") -> str:
+        base = f"""
         You are an agent designed to interact with a Microsoft SQL Server database.
         Given an input question, create a syntactically correct T-SQL query to run,
         then look at the results of the query and return the answer. Unless the user
@@ -104,6 +104,11 @@ class TextToSQLService:
         - tasks: Task management
         - inventory: Inventory items
         """
+
+        if schema_context:
+            base += "\nRelevant Schemas:\n" + schema_context
+
+        return base
     
     def get_quick_health_status(self) -> dict:
         try:
@@ -128,15 +133,22 @@ class TextToSQLService:
         logger.info(f"Processing query: {command[:50]}...")
         
         try:
-            if not self.agent:
-                raise LLMServiceError("SQL Agent not properly initialized")
-            
+            schemas = self.schema_store.search(command, k=5)
+            schema_text = "\n".join([s for _, s in schemas])
+
+            prompt = self._create_system_message(schema_text)
+            agent = create_react_agent(
+                self.llm,
+                self.tools,
+                prompt=prompt,
+            )
+
             messages = [{"role": "user", "content": command}]
             
             final_message = None
             sql_query = None
             
-            for step in self.agent.stream(
+            for step in agent.stream(
                 {"messages": messages},
                 stream_mode="values",
             ):
@@ -149,7 +161,7 @@ class TextToSQLService:
             
             if include_sql:
                 try:
-                    for step in self.agent.stream(
+                    for step in agent.stream(
                         {"messages": messages},
                         stream_mode="updates",
                     ):
