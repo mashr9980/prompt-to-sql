@@ -1,3 +1,4 @@
+import re
 import time
 import logging
 from typing import List, Optional
@@ -127,8 +128,10 @@ class DatabaseService:
             self._ensure_connection()
             
             # Sanitize table name to prevent SQL injection
-            if not table_name.replace('_', '').replace(' ', '').replace('$', '').isalnum():
+            if not re.match(r"^[\w\s$]+$", table_name, re.UNICODE):
                 raise ValueError("Invalid table name")
+            
+            escaped_table = table_name.replace("'", "''")
             
             schema_query = f"""
             SELECT 
@@ -137,8 +140,8 @@ class DatabaseService:
                 IS_NULLABLE,
                 COLUMN_DEFAULT,
                 CHARACTER_MAXIMUM_LENGTH
-            FROM INFORMATION_SCHEMA.COLUMNS 
-            WHERE TABLE_NAME = '{table_name}'
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_NAME = N'{escaped_table}'
             ORDER BY ORDINAL_POSITION
             """
             

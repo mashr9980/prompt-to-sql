@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from .config import settings
 from .routes import health, database, query
@@ -147,16 +147,9 @@ def create_app() -> FastAPI:
     app.include_router(query.router)
     
     # Root endpoint
-    @app.get("/", tags=["Root"])
-    async def root():
-        """Root endpoint with API information"""
-        return {
-            "message": "Text-to-SQL API is running",
-            "version": settings.API_VERSION,
-            "docs": "/docs",
-            "health": "/health/quick",
-            "status": "operational"
-        }
+    @app.get("/app")
+    async def serve_user_app():
+        return FileResponse("static/index.html")
     
     # Global exception handlers
     @app.exception_handler(DatabaseConnectionError)
