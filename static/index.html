@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Database Query System</title>
+    <link rel="stylesheet" href="/static/styles/style.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <header class="header">
+            <div class="header-content">
+                <div class="logo">
+                    <i class="fas fa-database"></i>
+                    <h1>AI Database Query System</h1>
+                </div>
+                <div class="status-indicator" id="statusIndicator">
+                    <i class="fas fa-circle"></i>
+                    <span>Connecting...</span>
+                </div>
+            </div>
+        </header>
+
+        <div class="main-content">
+            <div class="sidebar">
+                <nav class="nav-menu">
+                    <div class="nav-item active" data-section="query">
+                        <i class="fas fa-comments"></i>
+                        <span>Query Assistant</span>
+                    </div>
+                    <div class="nav-item" data-section="sql">
+                        <i class="fas fa-code"></i>
+                        <span>Direct SQL</span>
+                    </div>
+                    <div class="nav-item" data-section="database">
+                        <i class="fas fa-table"></i>
+                        <span>Database Info</span>
+                    </div>
+                    <div class="nav-item" data-section="health">
+                        <i class="fas fa-heartbeat"></i>
+                        <span>System Health</span>
+                    </div>
+                </nav>
+            </div>
+
+            <div class="content-area">
+                <section id="querySection" class="section active">
+                    <div class="section-header">
+                        <h2><i class="fas fa-comments"></i> Natural Language Query</h2>
+                        <p>Ask questions about your database in plain English or Arabic</p>
+                    </div>
+                    
+                    <div class="query-container">
+                        <div class="input-group">
+                            <textarea 
+                                id="queryInput" 
+                                placeholder="Ask your question here... e.g., 'Show me all employees who worked today' or 'كم عدد الموظفين في المشروع؟'"
+                                rows="3"
+                            ></textarea>
+                            <div class="input-actions">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="includeSql" checked>
+                                    <span class="checkmark"></span>
+                                    Include SQL Query
+                                </label>
+                                <button id="queryBtn" class="btn-primary">
+                                    <i class="fas fa-paper-plane"></i>
+                                    Send Query
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="quick-queries">
+                            <h3>Quick Queries</h3>
+                            <div class="query-suggestions">
+                                <button class="suggestion-btn" data-query="Show me all projects with their status">
+                                    <i class="fas fa-project-diagram"></i>
+                                    All Projects
+                                </button>
+                                <button class="suggestion-btn" data-query="List employees who attended today">
+                                    <i class="fas fa-users"></i>
+                                    Today's Attendance
+                                </button>
+                                <button class="suggestion-btn" data-query="Show pending purchase orders">
+                                    <i class="fas fa-shopping-cart"></i>
+                                    Pending POs
+                                </button>
+                                <button class="suggestion-btn" data-query="Display recent transactions">
+                                    <i class="fas fa-money-bill-wave"></i>
+                                    Recent Transactions
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="queryResults" class="results-container hidden">
+                        <div class="results-header">
+                            <h3><i class="fas fa-chart-line"></i> Query Results</h3>
+                            <div class="results-actions">
+                                <button id="copyResult" class="btn-secondary">
+                                    <i class="fas fa-copy"></i>
+                                    Copy
+                                </button>
+                                <button id="clearResults" class="btn-secondary">
+                                    <i class="fas fa-trash"></i>
+                                    Clear
+                                </button>
+                            </div>
+                        </div>
+                        <div id="queryResultContent"></div>
+                    </div>
+                </section>
+
+                <section id="sqlSection" class="section">
+                    <div class="section-header">
+                        <h2><i class="fas fa-code"></i> Direct SQL Execution</h2>
+                        <p>Execute SQL queries directly against the database</p>
+                    </div>
+                    
+                    <div class="sql-container">
+                        <div class="sql-editor">
+                            <textarea 
+                                id="sqlInput" 
+                                placeholder="Enter your SQL query here...&#10;Example: SELECT TOP 10 * FROM users WHERE active = 1"
+                                rows="8"
+                            ></textarea>
+                            <div class="sql-actions">
+                                <button id="executeSqlBtn" class="btn-primary">
+                                    <i class="fas fa-play"></i>
+                                    Execute Query
+                                </button>
+                                <button id="formatSqlBtn" class="btn-secondary">
+                                    <i class="fas fa-align-left"></i>
+                                    Format
+                                </button>
+                                <button id="clearSqlBtn" class="btn-secondary">
+                                    <i class="fas fa-eraser"></i>
+                                    Clear
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="sqlResults" class="results-container hidden">
+                        <div class="results-header">
+                            <h3><i class="fas fa-database"></i> SQL Results</h3>
+                            <div class="results-actions">
+                                <button id="copySqlResult" class="btn-secondary">
+                                    <i class="fas fa-copy"></i>
+                                    Copy
+                                </button>
+                                <button id="clearSqlResults" class="btn-secondary">
+                                    <i class="fas fa-trash"></i>
+                                    Clear
+                                </button>
+                            </div>
+                        </div>
+                        <div id="sqlResultContent"></div>
+                    </div>
+                </section>
+
+                <section id="databaseSection" class="section">
+                    <div class="section-header">
+                        <h2><i class="fas fa-table"></i> Database Information</h2>
+                        <p>Explore your database structure and tables</p>
+                    </div>
+                    
+                    <div class="database-container">
+                        <div class="database-actions">
+                            <button id="loadTablesBtn" class="btn-primary">
+                                <i class="fas fa-sync"></i>
+                                Load Tables
+                            </button>
+                        </div>
+
+                        <div id="databaseInfo" class="database-info hidden">
+                            <div class="tables-list">
+                                <h3><i class="fas fa-list"></i> Available Tables</h3>
+                                <div id="tablesList" class="tables-grid"></div>
+                            </div>
+                            
+                            <div id="tableDetails" class="table-details hidden">
+                                <h3><i class="fas fa-info-circle"></i> Table Details</h3>
+                                <div id="tableSchema" class="schema-content"></div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section id="healthSection" class="section">
+                    <div class="section-header">
+                        <h2><i class="fas fa-heartbeat"></i> System Health</h2>
+                        <p>Monitor system status and performance</p>
+                    </div>
+                    
+                    <div class="health-container">
+                        <div class="health-actions">
+                            <button id="checkHealthBtn" class="btn-primary">
+                                <i class="fas fa-stethoscope"></i>
+                                Check Health
+                            </button>
+                            <button id="quickHealthBtn" class="btn-secondary">
+                                <i class="fas fa-tachometer-alt"></i>
+                                Quick Check
+                            </button>
+                        </div>
+
+                        <div id="healthResults" class="health-results hidden">
+                            <div class="health-cards">
+                                <div class="health-card" id="systemStatus">
+                                    <div class="card-icon">
+                                        <i class="fas fa-server"></i>
+                                    </div>
+                                    <div class="card-content">
+                                        <h4>System Status</h4>
+                                        <span class="status-text">Unknown</span>
+                                    </div>
+                                </div>
+                                
+                                <div class="health-card" id="databaseStatus">
+                                    <div class="card-icon">
+                                        <i class="fas fa-database"></i>
+                                    </div>
+                                    <div class="card-content">
+                                        <h4>Database</h4>
+                                        <span class="status-text">Unknown</span>
+                                    </div>
+                                </div>
+                                
+                                <div class="health-card" id="tablesCount">
+                                    <div class="card-icon">
+                                        <i class="fas fa-table"></i>
+                                    </div>
+                                    <div class="card-content">
+                                        <h4>Tables</h4>
+                                        <span class="status-text">-</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </div>
+    </div>
+
+    <div id="loadingOverlay" class="loading-overlay hidden">
+        <div class="loading-spinner">
+            <i class="fas fa-spinner fa-spin"></i>
+            <p>Processing your request...</p>
+        </div>
+    </div>
+
+    <div id="errorToast" class="toast error hidden">
+        <i class="fas fa-exclamation-triangle"></i>
+        <span class="toast-message"></span>
+        <button class="toast-close">
+            <i class="fas fa-times"></i>
+        </button>
+    </div>
+
+    <div id="successToast" class="toast success hidden">
+        <i class="fas fa-check-circle"></i>
+        <span class="toast-message"></span>
+        <button class="toast-close">
+            <i class="fas fa-times"></i>
+        </button>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

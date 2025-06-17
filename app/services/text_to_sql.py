@@ -1,26 +1,111 @@
 import time
 import logging
-from typing import Optional
+from typing import Optional, Dict, Any
+from langchain_community.utilities import SQLDatabase
+from langchain_community.agent_toolkits import SQLDatabaseToolkit
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_openai import ChatOpenAI
+from langgraph.prebuilt import create_react_agent
 
 from ..schemas.query import QueryResponse
 from ..schemas.database import TableInfo
 from ..services.database import DatabaseService
-from ..services.llm import LLMService
-from ..core.exceptions import QueryExecutionError
+from ..config import settings
+from ..core.exceptions import QueryExecutionError, LLMServiceError
 
 logger = logging.getLogger(__name__)
 
 
 class TextToSQLService:
-    """Main service for converting natural language to SQL and executing queries"""
     
-    def __init__(self, llm_service: LLMService, database_service: DatabaseService):
-        self.llm_service = llm_service
+    def __init__(self, llm_service, database_service: DatabaseService):
         self.database_service = database_service
-        logger.info("TextToSQLService initialized successfully")
+        self.llm_service = llm_service
+        
+        try:
+            self.llm = ChatOpenAI(
+                model=settings.OPENAI_MODEL,
+                temperature=settings.OPENAI_TEMPERATURE,
+                api_key=settings.OPENAI_API_KEY
+            )
+            
+            self.sql_db = SQLDatabase.from_uri(settings.DATABASE_URL)
+            
+            self.toolkit = SQLDatabaseToolkit(db=self.sql_db, llm=self.llm)
+            self.tools = self.toolkit.get_tools()
+            
+            self.system_message = self._create_system_message()
+            
+            self.agent = create_react_agent(
+                self.llm, 
+                self.tools, 
+                prompt=self.system_message
+            )
+            
+            logger.info("TextToSQLService initialized with LangChain SQL Agent")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize TextToSQLService: {str(e)}")
+            self.agent = None
+    
+    def _create_system_message(self) -> str:
+        return f"""
+        You are an agent designed to interact with a Microsoft SQL Server database.
+        Given an input question, create a syntactically correct T-SQL query to run,
+        then look at the results of the query and return the answer. Unless the user
+        specifies a specific number of examples they wish to obtain, always limit your
+        query to at most 10 results.
+
+        You can order the results by a relevant column to return the most interesting
+        examples in the database. Never query for all the columns from a specific table,
+        only ask for the relevant columns given the question.
+
+        You MUST double check your query before executing it. If you get an error while
+        executing a query, rewrite the query and try again.
+
+        DO NOT make any DML statements (INSERT, UPDATE, DELETE, DROP etc.) to the
+        database.
+
+        To start you should ALWAYS look at the tables in the database to see what you
+        can query. Do NOT skip this step.
+        Then you should query the schema of the most relevant tables.
+
+        IMPORTANT T-SQL SPECIFIC RULES:
+        1. Use square brackets [] for table/column names with spaces or special characters
+        2. Use TOP instead of LIMIT
+        3. For Arabic text searches, use LIKE with COLLATE SQL_Latin1_General_CP1_CI_AS
+        4. Handle mixed language content appropriately
+        5. Use proper T-SQL syntax and functions
+        6. Consider NULL values in conditions
+        7. Use appropriate JOINs when querying multiple related tables
+        8. For date queries, use proper DATETIME formatting
+        9. For money/financial queries, use MONEY data type appropriately
+        10. Always use column names that actually exist in the database schema
+
+        CONTEXT: This is a business management system with:
+        - Arabic/English mixed content
+        - Project management (projects, PO, quotations)
+        - Employee management (attendance, salaries, tasks)
+        - Inventory management
+        - Financial transactions
+        - Supplier management
+        - Cafe/restaurant operations
+
+        KEY TABLES LIKELY INCLUDE:
+        - 'PO Transactions$': Purchase orders with projects, payments, dates
+        - users: Employee information
+        - project: Project details
+        - po: Purchase orders
+        - attendance: Employee attendance
+        - salary: Salary information
+        - supplier: Supplier data
+        - quotations: Quotation details
+        - tasks: Task management
+        - inventory: Inventory items
+        """
     
     def get_quick_health_status(self) -> dict:
-        """Get quick health status without expensive operations"""
         try:
             is_connected = self.database_service.test_connection()
             
@@ -38,22 +123,45 @@ class TextToSQLService:
             }
     
     async def process_query(self, command: str, include_sql: bool = True) -> QueryResponse:
-        """Process natural language query and return results"""
         start_time = time.time()
         
         logger.info(f"Processing query: {command[:50]}...")
         
         try:
-            # Get table information for context
-            table_info = self.database_service.get_table_info()
+            if not self.agent:
+                raise LLMServiceError("SQL Agent not properly initialized")
             
-            # Generate SQL using LLM
-            logger.debug("Generating SQL query using LLM")
-            sql_query = self.llm_service.generate_sql(command, table_info)
+            messages = [{"role": "user", "content": command}]
             
-            # Execute the generated SQL
-            logger.debug("Executing generated SQL query")
-            result = self.database_service.execute_sql(sql_query)
+            final_message = None
+            sql_query = None
+            
+            for step in self.agent.stream(
+                {"messages": messages},
+                stream_mode="values",
+            ):
+                final_message = step["messages"][-1]
+            
+            if hasattr(final_message, 'content'):
+                result = final_message.content
+            else:
+                result = str(final_message)
+            
+            if include_sql:
+                try:
+                    for step in self.agent.stream(
+                        {"messages": messages},
+                        stream_mode="updates",
+                    ):
+                        if "agent" in step:
+                            for message in step["agent"]["messages"]:
+                                if hasattr(message, 'tool_calls') and message.tool_calls:
+                                    for tool_call in message.tool_calls:
+                                        if tool_call["name"] == "sql_db_query":
+                                            sql_query = tool_call["args"].get("query", "")
+                                            break
+                except:
+                    pass
             
             execution_time = time.time() - start_time
             
@@ -81,13 +189,12 @@ class TextToSQLService:
             )
     
     async def execute_direct_sql(self, sql_query: str) -> QueryResponse:
-        """Execute SQL query directly without LLM processing"""
         start_time = time.time()
         
         logger.info(f"Executing direct SQL: {sql_query[:50]}...")
         
         try:
-            result = self.database_service.execute_sql(sql_query)
+            result = self.sql_db.run(sql_query)
             execution_time = time.time() - start_time
             
             logger.info(f"Direct SQL executed successfully in {execution_time:.3f} seconds")
@@ -113,12 +220,11 @@ class TextToSQLService:
             )
     
     def get_database_info(self) -> TableInfo:
-        """Get comprehensive database information"""
         try:
             logger.debug("Retrieving database information")
             
-            table_names = self.database_service.get_table_names()
-            schema_info = self.database_service.get_table_info()
+            table_names = self.sql_db.get_usable_table_names()
+            schema_info = self.sql_db.get_table_info()
             
             return TableInfo(
                 table_names=table_names,
@@ -130,11 +236,10 @@ class TextToSQLService:
             raise QueryExecutionError(f"Failed to retrieve database information: {str(e)}")
     
     def get_table_description(self, table_name: str) -> dict:
-        """Get detailed description of a specific table"""
         try:
             logger.debug(f"Getting description for table: {table_name}")
             
-            result = self.database_service.describe_table(table_name)
+            result = self.sql_db.get_table_info([table_name])
             
             return {
                 "table_name": table_name,
@@ -151,9 +256,7 @@ class TextToSQLService:
             }
     
     def get_health_status(self, include_table_count: bool = True) -> dict:
-        """Get comprehensive health status"""
         try:
-            # Test database connection
             is_connected = self.database_service.test_connection()
             
             if not is_connected:
@@ -168,10 +271,9 @@ class TextToSQLService:
                 "database_connected": True
             }
             
-            # Include table count if requested
             if include_table_count:
                 try:
-                    table_names = self.database_service.get_table_names()
+                    table_names = self.sql_db.get_usable_table_names()
                     result["tables_count"] = len(table_names)
                 except Exception as e:
                     logger.warning(f"Could not get table count: {str(e)}")
@@ -181,4 +283,8 @@ class TextToSQLService:
         
         except Exception as e:
             logger.error(f"Health check failed: {str(e)}")
-            return
+            return {
+                "status": "unhealthy",
+                "database_connected": False,
+                "error": str(e)
+            }
