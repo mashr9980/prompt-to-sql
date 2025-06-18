@@ -22,14 +22,17 @@ class Settings(BaseSettings):
     #     "mssql+pyodbc://sa:Esap.12.Three@176.9.16.194,1433/JustForRestore?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes&Encrypt=no&timeout=30"
     # ]
     
-    # OpenAI Configuration
-    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
-    OPENAI_MODEL: str = "gpt-4o"
-    OPENAI_TEMPERATURE: float = 0.0
-    OPENAI_MAX_TOKENS: int = 1000
-    
-    # Gemini Configuration (for future use)
+    # OpenAI Configuration (deprecated)
+    # OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
+    # OPENAI_MODEL: str = "gpt-4o"
+    # OPENAI_TEMPERATURE: float = 0.0
+    # OPENAI_MAX_TOKENS: int = 1000
+
+    # Gemini Configuration
     GEMINI_API_KEY: str = "AIzaSyAuyfqEzHQ84VPaizqEMhR55GkLWC6njYs"
+    GEMINI_MODEL: str = "gemini-pro"
+    GEMINI_TEMPERATURE: float = 0.0
+    GEMINI_MAX_TOKENS: int = 1000
     
     # Cache Configuration
     CACHE_TTL: int = 300

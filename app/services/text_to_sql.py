@@ -1,35 +1,40 @@
-import time
 import logging
-from typing import Optional, Dict, Any
-from langchain_community.utilities import SQLDatabase
+import time
+from typing import Any, Dict, Optional
+
 from langchain_community.agent_toolkits import SQLDatabaseToolkit
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_community.utilities import SQLDatabase
 from langchain_core.output_parsers import StrOutputParser
-from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.prebuilt import create_react_agent
 
-from .schema_store import SchemaVectorStore
-
-from ..schemas.query import QueryResponse
-from ..schemas.database import TableInfo
-from ..services.database import DatabaseService
 from ..config import settings
-from ..core.exceptions import QueryExecutionError, LLMServiceError
+from ..core.exceptions import LLMServiceError, QueryExecutionError
+from ..schemas.database import TableInfo
+from ..schemas.query import QueryResponse
+from ..services.database import DatabaseService
+from .schema_store import SchemaVectorStore
 
 logger = logging.getLogger(__name__)
 
 
 class TextToSQLService:
-    
+
     def __init__(self, llm_service, database_service: DatabaseService):
         self.database_service = database_service
         self.llm_service = llm_service
-        
+
         try:
-            self.llm = ChatOpenAI(
-                model=settings.OPENAI_MODEL,
-                temperature=settings.OPENAI_TEMPERATURE,
-                api_key=settings.OPENAI_API_KEY
+            # self.llm = ChatOpenAI(
+            #     model=settings.OPENAI_MODEL,
+            #     temperature=settings.OPENAI_TEMPERATURE,
+            #     api_key=settings.OPENAI_API_KEY
+            # )
+            self.llm = ChatGoogleGenerativeAI(
+                model=settings.GEMINI_MODEL,
+                temperature=settings.GEMINI_TEMPERATURE,
+                google_api_key=settings.GEMINI_API_KEY,
             )
 
             self.sql_db = SQLDatabase.from_uri(settings.DATABASE_URL)
@@ -44,11 +49,11 @@ class TextToSQLService:
             self.base_system_message = self._create_system_message()
 
             logger.info("TextToSQLService initialized with LangChain SQL Agent")
-            
+
         except Exception as e:
             logger.error(f"Failed to initialize TextToSQLService: {str(e)}")
             self.schema_store = None
-    
+
     def _create_system_message(self, schema_context: str = "") -> str:
         base = f"""
         You are an agent designed to interact with a Microsoft SQL Server database.
@@ -109,29 +114,22 @@ class TextToSQLService:
             base += "\nRelevant Schemas:\n" + schema_context
 
         return base
-    
+
     def get_quick_health_status(self) -> dict:
         try:
             is_connected = self.database_service.test_connection()
-            
-            return {
-                "status": "healthy" if is_connected else "unhealthy",
-                "database_connected": is_connected
-            }
-        
+
+            return {"status": "healthy" if is_connected else "unhealthy", "database_connected": is_connected}
+
         except Exception as e:
             logger.error(f"Quick health check failed: {str(e)}")
-            return {
-                "status": "unhealthy",
-                "database_connected": False,
-                "error": str(e)
-            }
-    
+            return {"status": "unhealthy", "database_connected": False, "error": str(e)}
+
     async def process_query(self, command: str, include_sql: bool = True) -> QueryResponse:
         start_time = time.time()
-        
+
         logger.info(f"Processing query: {command[:50]}...")
-        
+
         try:
             schemas = self.schema_store.search(command, k=5)
             schema_text = "\n".join([s for _, s in schemas])
@@ -144,21 +142,21 @@ class TextToSQLService:
             )
 
             messages = [{"role": "user", "content": command}]
-            
+
             final_message = None
             sql_query = None
-            
+
             for step in agent.stream(
                 {"messages": messages},
                 stream_mode="values",
             ):
                 final_message = step["messages"][-1]
-            
-            if hasattr(final_message, 'content'):
+
+            if hasattr(final_message, "content"):
                 result = final_message.content
             else:
                 result = str(final_message)
-            
+
             if include_sql:
                 try:
                     for step in agent.stream(
@@ -167,122 +165,95 @@ class TextToSQLService:
                     ):
                         if "agent" in step:
                             for message in step["agent"]["messages"]:
-                                if hasattr(message, 'tool_calls') and message.tool_calls:
+                                if hasattr(message, "tool_calls") and message.tool_calls:
                                     for tool_call in message.tool_calls:
                                         if tool_call["name"] == "sql_db_query":
                                             sql_query = tool_call["args"].get("query", "")
                                             break
                 except:
                     pass
-            
+
             execution_time = time.time() - start_time
-            
+
             logger.info(f"Query processed successfully in {execution_time:.3f} seconds")
-            
+
             return QueryResponse(
                 success=True,
                 command=command,
                 sql_query=sql_query if include_sql else None,
                 result=result,
-                execution_time=round(execution_time, 3)
+                execution_time=round(execution_time, 3),
             )
-        
+
         except Exception as e:
             execution_time = time.time() - start_time
             error_msg = str(e)
-            
+
             logger.error(f"Query processing failed: {error_msg}")
-            
+
             return QueryResponse(
-                success=False,
-                command=command,
-                error=error_msg,
-                execution_time=round(execution_time, 3)
+                success=False, command=command, error=error_msg, execution_time=round(execution_time, 3)
             )
-    
+
     async def execute_direct_sql(self, sql_query: str) -> QueryResponse:
         start_time = time.time()
-        
+
         logger.info(f"Executing direct SQL: {sql_query[:50]}...")
-        
+
         try:
             result = self.sql_db.run(sql_query)
             execution_time = time.time() - start_time
-            
+
             logger.info(f"Direct SQL executed successfully in {execution_time:.3f} seconds")
-            
+
             return QueryResponse(
-                success=True,
-                sql_query=sql_query,
-                result=result,
-                execution_time=round(execution_time, 3)
+                success=True, sql_query=sql_query, result=result, execution_time=round(execution_time, 3)
             )
-        
+
         except Exception as e:
             execution_time = time.time() - start_time
             error_msg = str(e)
-            
+
             logger.error(f"Direct SQL execution failed: {error_msg}")
-            
+
             return QueryResponse(
-                success=False,
-                sql_query=sql_query,
-                error=error_msg,
-                execution_time=round(execution_time, 3)
+                success=False, sql_query=sql_query, error=error_msg, execution_time=round(execution_time, 3)
             )
-    
+
     def get_database_info(self) -> TableInfo:
         try:
             logger.debug("Retrieving database information")
-            
+
             table_names = self.sql_db.get_usable_table_names()
             schema_info = self.sql_db.get_table_info()
-            
-            return TableInfo(
-                table_names=table_names,
-                schema_info=schema_info
-            )
-        
+
+            return TableInfo(table_names=table_names, schema_info=schema_info)
+
         except Exception as e:
             logger.error(f"Failed to get database info: {str(e)}")
             raise QueryExecutionError(f"Failed to retrieve database information: {str(e)}")
-    
+
     def get_table_description(self, table_name: str) -> dict:
         try:
             logger.debug(f"Getting description for table: {table_name}")
-            
+
             result = self.sql_db.get_table_info([table_name])
-            
-            return {
-                "table_name": table_name,
-                "schema": result,
-                "success": True
-            }
-        
+
+            return {"table_name": table_name, "schema": result, "success": True}
+
         except Exception as e:
             logger.error(f"Failed to describe table {table_name}: {str(e)}")
-            return {
-                "table_name": table_name,
-                "error": str(e),
-                "success": False
-            }
-    
+            return {"table_name": table_name, "error": str(e), "success": False}
+
     def get_health_status(self, include_table_count: bool = True) -> dict:
         try:
             is_connected = self.database_service.test_connection()
-            
+
             if not is_connected:
-                return {
-                    "status": "unhealthy",
-                    "database_connected": False,
-                    "error": "Database connection failed"
-                }
-            
-            result = {
-                "status": "healthy",
-                "database_connected": True
-            }
-            
+                return {"status": "unhealthy", "database_connected": False, "error": "Database connection failed"}
+
+            result = {"status": "healthy", "database_connected": True}
+
             if include_table_count:
                 try:
                     table_names = self.sql_db.get_usable_table_names()
@@ -290,13 +261,9 @@ class TextToSQLService:
                 except Exception as e:
                     logger.warning(f"Could not get table count: {str(e)}")
                     result["tables_count"] = None
-            
+
             return result
-        
+
         except Exception as e:
             logger.error(f"Health check failed: {str(e)}")
-            return {
-                "status": "unhealthy",
-                "database_connected": False,
-                "error": str(e)
-            }
+            return {"status": "unhealthy", "database_connected": False, "error": str(e)}
