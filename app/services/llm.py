@@ -49,7 +49,7 @@ class GeminiLLMService(LLMService):
         raise NotImplementedError("Gemini LLM service not yet implemented")
 
 
-def create_llm_service(service_type: str = "openai") -> LLMService:
+def create_llm_service(service_type: str = "gemini") -> LLMService:
     service_type = service_type.lower()
     
     if service_type == "openai":

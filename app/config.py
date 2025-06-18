@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     OPENAI_MAX_TOKENS: int = 1000
     
     # Gemini Configuration (for future use)
-    # GEMINI_API_KEY: str = "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"
+    GEMINI_API_KEY: str = "AIzaSyAuyfqEzHQ84VPaizqEMhR55GkLWC6njYs"
     
     # Cache Configuration
     CACHE_TTL: int = 300
