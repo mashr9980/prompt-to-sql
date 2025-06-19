@@ -8,6 +8,7 @@ from ..services.database import DatabaseService
 from ..services.llm import LLMService, create_llm_service
 from ..services.text_to_sql import TextToSQLService
 from ..core.exceptions import ConfigurationError
+from ..config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +41,10 @@ def get_llm_service() -> LLMService:
     global _llm_service
     
     if _llm_service is None:
-        logger.info("Initializing LLM service")
+        logger.info(f"Initializing {settings.DEFAULT_LLM_PROVIDER.upper()} LLM service")
         try:
-            _llm_service = create_llm_service("openai")
-            logger.info("LLM service initialized successfully")
+            _llm_service = create_llm_service(settings.DEFAULT_LLM_PROVIDER)
+            logger.info(f"{settings.DEFAULT_LLM_PROVIDER.upper()} LLM service initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize LLM service: {str(e)}")
             raise ConfigurationError(f"LLM service initialization failed: {str(e)}")
@@ -91,4 +92,7 @@ def get_service_status() -> dict:
         "database_service_initialized": _database_service is not None,
         "llm_service_initialized": _llm_service is not None,
         "text_to_sql_service_initialized": _text_to_sql_service is not None,
+        "current_llm_provider": settings.DEFAULT_LLM_PROVIDER.upper(),
+        "ollama_model": settings.OLLAMA_MODEL,
+        "ollama_base_url": settings.OLLAMA_BASE_URL,
     }

@@ -6,6 +6,7 @@ from langchain_community.agent_toolkits import SQLDatabaseToolkit
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_openai import ChatOpenAI
+from langchain_ollama import ChatOllama
 from langgraph.prebuilt import create_react_agent
 
 from .schema_store import SchemaVectorStore
@@ -26,11 +27,23 @@ class TextToSQLService:
         self.llm_service = llm_service
         
         try:
-            self.llm = ChatOpenAI(
-                model=settings.OPENAI_MODEL,
-                temperature=settings.OPENAI_TEMPERATURE,
-                api_key=settings.OPENAI_API_KEY
-            )
+            # Initialize LLM based on configuration
+            if settings.DEFAULT_LLM_PROVIDER.lower() == "ollama":
+                logger.info("Initializing Ollama LLM for text-to-SQL")
+                self.llm = ChatOllama(
+                    model=settings.OLLAMA_MODEL,
+                    base_url=settings.OLLAMA_BASE_URL,
+                    temperature=settings.OLLAMA_TEMPERATURE,
+                    num_predict=settings.OLLAMA_MAX_TOKENS
+                )
+            else:
+                logger.info("Initializing OpenAI LLM for text-to-SQL")
+                self.llm = ChatOpenAI(
+                    model=settings.OPENAI_MODEL,
+                    temperature=settings.OPENAI_TEMPERATURE,
+                    api_key=settings.OPENAI_API_KEY,
+                    max_tokens=settings.OPENAI_MAX_TOKENS
+                )
 
             self.sql_db = SQLDatabase.from_uri(settings.DATABASE_URL)
 
@@ -43,7 +56,7 @@ class TextToSQLService:
 
             self.base_system_message = self._create_system_message()
 
-            logger.info("TextToSQLService initialized with LangChain SQL Agent")
+            logger.info(f"TextToSQLService initialized with {settings.DEFAULT_LLM_PROVIDER.upper()} LLM and LangChain SQL Agent")
             
         except Exception as e:
             logger.error(f"Failed to initialize TextToSQLService: {str(e)}")
@@ -130,7 +143,7 @@ class TextToSQLService:
     async def process_query(self, command: str, include_sql: bool = True) -> QueryResponse:
         start_time = time.time()
         
-        logger.info(f"Processing query: {command[:50]}...")
+        logger.info(f"Processing query with {settings.DEFAULT_LLM_PROVIDER.upper()} LLM: {command[:50]}...")
         
         try:
             schemas = self.schema_store.search(command, k=5)

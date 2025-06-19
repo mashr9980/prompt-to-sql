@@ -15,6 +15,42 @@ class LLMService(ABC):
         pass
 
 
+class OllamaLLMService(LLMService):
+    
+    def __init__(self, base_url: Optional[str] = None, model: Optional[str] = None):
+        self.base_url = base_url or settings.OLLAMA_BASE_URL
+        self.model = model or settings.OLLAMA_MODEL
+        
+        try:
+            # Test if ollama package is available
+            import ollama
+            self.client = ollama.Client(host=self.base_url)
+            
+            # Test connection to Ollama
+            try:
+                models = self.client.list()
+                logger.info(f"Ollama LLM service initialized successfully with {len(models.get('models', []))} models")
+                
+                # Check if our model is available
+                # model_names = [m.get('name', '') for m in models.get('models', [])]
+                # if not any(self.model in name for name in model_names):
+                #     logger.warning(f"Model {self.model} not found in available models: {model_names}")
+                #     logger.warning("Make sure to run: ollama pull qwen2.5:7b")
+                    
+            except Exception as e:
+                logger.warning(f"Could not connect to Ollama server: {e}")
+                logger.warning("Make sure Ollama is running on http://localhost:11434")
+                
+        except ImportError:
+            raise ConfigurationError("Ollama package not installed. Run: pip install ollama")
+        except Exception as e:
+            raise LLMServiceError(f"Failed to initialize Ollama client: {str(e)}")
+    
+    def generate_sql(self, natural_language_query: str, table_info: str) -> str:
+        logger.info("Note: LLM service is now handled by LangChain SQL Agent in TextToSQLService")
+        return "This method is deprecated - use LangChain SQL Agent instead"
+
+
 class OpenAILLMService(LLMService):
     
     def __init__(self, api_key: Optional[str] = None):
@@ -49,10 +85,15 @@ class GeminiLLMService(LLMService):
         raise NotImplementedError("Gemini LLM service not yet implemented")
 
 
-def create_llm_service(service_type: str = "openai") -> LLMService:
+def create_llm_service(service_type: str = None) -> LLMService:
+    if service_type is None:
+        service_type = settings.DEFAULT_LLM_PROVIDER
+    
     service_type = service_type.lower()
     
-    if service_type == "openai":
+    if service_type == "ollama":
+        return OllamaLLMService()
+    elif service_type == "openai":
         return OpenAILLMService()
     elif service_type == "gemini":
         return GeminiLLMService()
