@@ -9,7 +9,9 @@ from langchain_openai import ChatOpenAI
 from langchain_ollama import ChatOllama
 from langgraph.prebuilt import create_react_agent
 
-from .schema_store import SchemaVectorStore
+from app.services.schema_store import PersistentEnhancedSchemaVectorStore
+
+# from .persistent_vector_store import PersistentEnhancedSchemaVectorStore
 
 from ..schemas.query import QueryResponse
 from ..schemas.database import TableInfo
@@ -27,7 +29,6 @@ class TextToSQLService:
         self.llm_service = llm_service
         
         try:
-            # Initialize LLM based on configuration
             if settings.DEFAULT_LLM_PROVIDER.lower() == "ollama":
                 logger.info("Initializing Ollama LLM for text-to-SQL")
                 self.llm = ChatOllama(
@@ -46,21 +47,18 @@ class TextToSQLService:
                 )
 
             self.sql_db = SQLDatabase.from_uri(settings.DATABASE_URL)
-
             self.toolkit = SQLDatabaseToolkit(db=self.sql_db, llm=self.llm)
             self.tools = self.toolkit.get_tools()
 
-            # Build schema vector store for retrieval
-            self.schema_store = SchemaVectorStore(self.database_service)
-            self.schema_store.build()
+            self.enhanced_schema_store = PersistentEnhancedSchemaVectorStore(self.database_service)
 
             self.base_system_message = self._create_system_message()
 
-            logger.info(f"TextToSQLService initialized with {settings.DEFAULT_LLM_PROVIDER.upper()} LLM and LangChain SQL Agent")
+            logger.info(f"TextToSQLService initialized with {settings.DEFAULT_LLM_PROVIDER.upper()} LLM and Persistent Enhanced Schema Store")
             
         except Exception as e:
             logger.error(f"Failed to initialize TextToSQLService: {str(e)}")
-            self.schema_store = None
+            self.enhanced_schema_store = None
     
     def _create_system_message(self, schema_context: str = "") -> str:
         base = f"""
@@ -105,21 +103,20 @@ class TextToSQLService:
         - Supplier management
         - Cafe/restaurant operations
 
-        KEY TABLES LIKELY INCLUDE:
-        - 'PO Transactions$': Purchase orders with projects, payments, dates
-        - users: Employee information
-        - project: Project details
-        - po: Purchase orders
-        - attendance: Employee attendance
-        - salary: Salary information
-        - supplier: Supplier data
-        - quotations: Quotation details
-        - tasks: Task management
-        - inventory: Inventory items
+        ENHANCED METADATA CONTEXT:
+        The system has access to comprehensive table metadata including:
+        - Detailed column information with types and constraints
+        - Primary and foreign key relationships
+        - LLM analysis describing table purposes and data patterns
+        - Sample data patterns and observations
+        - Relationship mappings between tables
+        
+        Use this enhanced context to make more informed decisions about which tables
+        to query and how to structure your queries for maximum accuracy.
         """
 
         if schema_context:
-            base += "\nRelevant Schemas:\n" + schema_context
+            base += "\n\nRELEVANT SCHEMA CONTEXT:\n" + schema_context
 
         return base
     
@@ -146,10 +143,44 @@ class TextToSQLService:
         logger.info(f"Processing query with {settings.DEFAULT_LLM_PROVIDER.upper()} LLM: {command[:50]}...")
         
         try:
-            schemas = self.schema_store.search(command, k=5)
-            schema_text = "\n".join([s for _, s in schemas])
+            schema_context = ""
+            
+            if self.enhanced_schema_store and self.enhanced_schema_store.is_metadata_loaded:
+                logger.info("Using enhanced metadata for query processing")
+                results = self.enhanced_schema_store.search(command, k=5)
+                
+                context_parts = []
+                for table_name, schema_text, metadata in results:
+                    context_parts.append(f"--- {table_name} ---")
+                    context_parts.append(schema_text)
+                    
+                    if metadata.get("llm_analysis"):
+                        analysis = metadata["llm_analysis"]
+                        if analysis.get("purpose"):
+                            context_parts.append(f"Purpose: {analysis['purpose']}")
+                        if analysis.get("data_patterns"):
+                            context_parts.append(f"Patterns: {'; '.join(analysis['data_patterns'])}")
+                        if analysis.get("relationships"):
+                            rel_texts = []
+                            for rel in analysis['relationships']:
+                                if isinstance(rel, dict):
+                                    rel_texts.append(f"Related to {rel.get('table', '')} via {rel.get('relationship_type', '')}")
+                                else:
+                                    rel_texts.append(str(rel))
+                            if rel_texts:
+                                context_parts.append(f"Relationships: {'; '.join(rel_texts)}")
+                    
+                    context_parts.append("")
+                
+                schema_context = "\n".join(context_parts)
+                logger.info(f"Enhanced context prepared with {len(results)} relevant tables")
+            else:
+                logger.info("Using basic schema store for query processing")
+                if hasattr(self, 'schema_store'):
+                    results = self.schema_store.search(command, k=5)
+                    schema_context = "\n".join([s for _, s in results])
 
-            prompt = self._create_system_message(schema_text)
+            prompt = self._create_system_message(schema_context)
             agent = create_react_agent(
                 self.llm,
                 self.tools,
@@ -185,7 +216,8 @@ class TextToSQLService:
                                         if tool_call["name"] == "sql_db_query":
                                             sql_query = tool_call["args"].get("query", "")
                                             break
-                except:
+                except Exception as e:
+                    logger.warning(f"Could not extract SQL query: {e}")
                     pass
             
             execution_time = time.time() - start_time
@@ -255,7 +287,7 @@ class TextToSQLService:
                 table_names=table_names,
                 schema_info=schema_info
             )
-        
+         
         except Exception as e:
             logger.error(f"Failed to get database info: {str(e)}")
             raise QueryExecutionError(f"Failed to retrieve database information: {str(e)}")
@@ -304,6 +336,14 @@ class TextToSQLService:
                     logger.warning(f"Could not get table count: {str(e)}")
                     result["tables_count"] = None
             
+            if self.enhanced_schema_store:
+                kb_status = self.enhanced_schema_store.get_status()
+                result["knowledge_base"] = {
+                    "metadata_loaded": kb_status["metadata_loaded"],
+                    "indexed_tables": kb_status["total_tables"],
+                    "upload_time": kb_status["upload_time"]
+                }
+            
             return result
         
         except Exception as e:
@@ -311,5 +351,124 @@ class TextToSQLService:
             return {
                 "status": "unhealthy",
                 "database_connected": False,
+                "error": str(e)
+            }
+    
+    def get_enhanced_schema_store(self):
+        """Get the enhanced schema store instance"""
+        return self.enhanced_schema_store
+    
+    def rebuild_knowledge_base(self):
+        """Rebuild the knowledge base vector index"""
+        if self.enhanced_schema_store:
+            try:
+                self.enhanced_schema_store.rebuild_index()
+                logger.info("Knowledge base rebuilt successfully")
+                return {"success": True, "message": "Knowledge base rebuilt successfully"}
+            except Exception as e:
+                logger.error(f"Failed to rebuild knowledge base: {e}")
+                return {"success": False, "error": str(e)}
+        else:
+            return {"success": False, "error": "Enhanced schema store not available"}
+    
+    def clear_knowledge_base(self):
+        """Clear the knowledge base completely"""
+        if self.enhanced_schema_store:
+            try:
+                self.enhanced_schema_store.clear_all()
+                logger.info("Knowledge base cleared successfully")
+                return {"success": True, "message": "Knowledge base cleared successfully"}
+            except Exception as e:
+                logger.error(f"Failed to clear knowledge base: {e}")
+                return {"success": False, "error": str(e)}
+        else:
+            return {"success": False, "error": "Enhanced schema store not available"}
+    
+    def get_knowledge_base_stats(self) -> dict:
+        """Get detailed statistics about the knowledge base"""
+        if not self.enhanced_schema_store:
+            return {
+                "available": False,
+                "error": "Enhanced schema store not available"
+            }
+        
+        try:
+            status = self.enhanced_schema_store.get_status()
+            
+            stats = {
+                "available": True,
+                "metadata_loaded": status["metadata_loaded"],
+                "total_tables": status["total_tables"],
+                "index_built": status["index_built"],
+                "upload_time": status["upload_time"],
+                "storage_path": status["storage_path"],
+                "files_exist": status["files_exist"]
+            }
+            
+            if status["metadata_loaded"]:
+                stats["table_names"] = self.enhanced_schema_store.table_names[:10]  # First 10 table names
+                stats["sample_purposes"] = []
+                
+                for table_name in self.enhanced_schema_store.table_names[:5]:
+                    details = self.enhanced_schema_store.get_table_details(table_name)
+                    if details and details.get("llm_analysis", {}).get("purpose"):
+                        stats["sample_purposes"].append({
+                            "table": table_name,
+                            "purpose": details["llm_analysis"]["purpose"]
+                        })
+            
+            return stats
+            
+        except Exception as e:
+            logger.error(f"Failed to get knowledge base stats: {e}")
+            return {
+                "available": True,
+                "error": str(e)
+            }
+    
+    def search_knowledge_base(self, query: str, limit: int = 5) -> dict:
+        """Search the knowledge base for relevant tables"""
+        if not self.enhanced_schema_store:
+            return {
+                "success": False,
+                "error": "Enhanced schema store not available"
+            }
+        
+        if not self.enhanced_schema_store.is_metadata_loaded:
+            return {
+                "success": False,
+                "error": "No metadata loaded in knowledge base"
+            }
+        
+        try:
+            results = self.enhanced_schema_store.search(query, k=limit)
+            
+            formatted_results = []
+            for table_name, schema_text, metadata in results:
+                result_item = {
+                    "table_name": table_name,
+                    "schema_summary": schema_text[:300] + "..." if len(schema_text) > 300 else schema_text
+                }
+                
+                if metadata.get("llm_analysis"):
+                    analysis = metadata["llm_analysis"]
+                    result_item["purpose"] = analysis.get("purpose", "")
+                    result_item["data_patterns"] = analysis.get("data_patterns", [])
+                    result_item["relationships"] = analysis.get("relationships", [])
+                    result_item["observations"] = analysis.get("observations", [])
+                
+                formatted_results.append(result_item)
+            
+            return {
+                "success": True,
+                "query": query,
+                "results": formatted_results,
+                "total_found": len(formatted_results)
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to search knowledge base: {e}")
+            return {
+                "success": False,
                 "error": str(e)
             }

@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     OLLAMA_MAX_TOKENS: int = 4000
     
     # OpenAI Configuration (fallback)
-    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
     OPENAI_MODEL: str = "gpt-4o"
     OPENAI_TEMPERATURE: float = 0.0
     OPENAI_MAX_TOKENS: int = 4000
