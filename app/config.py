@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     # ]
     
     # OpenAI Configuration (deprecated)
-    # OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
     # OPENAI_MODEL: str = "gpt-4o"
     # OPENAI_TEMPERATURE: float = 0.0
     # OPENAI_MAX_TOKENS: int = 1000
@@ -39,8 +39,8 @@ class Settings(BaseSettings):
     SCHEMA_CACHE_TTL: int = 1800
     
     # Performance Configuration
-    CONNECTION_TIMEOUT: int = 30
-    QUERY_TIMEOUT: int = 60
+    CONNECTION_TIMEOUT: int = 300
+    QUERY_TIMEOUT: int = 600
     MAX_RETRIES: int = 3
     
     # CORS Configuration
