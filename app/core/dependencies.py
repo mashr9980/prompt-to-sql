@@ -1,13 +1,14 @@
 """Dependency injection for FastAPI application"""
 
 import logging
-from functools import lru_cache
 from typing import Optional
+from functools import lru_cache
 
-from ..core.exceptions import ConfigurationError
 from ..services.database import DatabaseService
 from ..services.llm import LLMService, create_llm_service
 from ..services.text_to_sql import TextToSQLService
+from ..core.exceptions import ConfigurationError
+from ..config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ _text_to_sql_service: Optional[TextToSQLService] = None
 def get_database_service() -> DatabaseService:
     """Get or create database service singleton"""
     global _database_service
-
+    
     if _database_service is None:
         logger.info("Initializing database service")
         try:
@@ -30,7 +31,7 @@ def get_database_service() -> DatabaseService:
         except Exception as e:
             logger.error(f"Failed to initialize database service: {str(e)}")
             raise ConfigurationError(f"Database service initialization failed: {str(e)}")
-
+    
     return _database_service
 
 
@@ -38,16 +39,16 @@ def get_database_service() -> DatabaseService:
 def get_llm_service() -> LLMService:
     """Get or create LLM service singleton"""
     global _llm_service
-
+    
     if _llm_service is None:
-        logger.info("Initializing LLM service")
+        logger.info(f"Initializing {settings.DEFAULT_LLM_PROVIDER.upper()} LLM service")
         try:
-            _llm_service = create_llm_service("gemini")
-            logger.info("LLM service initialized successfully")
+            _llm_service = create_llm_service(settings.DEFAULT_LLM_PROVIDER)
+            logger.info(f"{settings.DEFAULT_LLM_PROVIDER.upper()} LLM service initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize LLM service: {str(e)}")
             raise ConfigurationError(f"LLM service initialization failed: {str(e)}")
-
+    
     return _llm_service
 
 
@@ -55,7 +56,7 @@ def get_llm_service() -> LLMService:
 def get_text_to_sql_service() -> TextToSQLService:
     """Get or create TextToSQL service singleton"""
     global _text_to_sql_service
-
+    
     if _text_to_sql_service is None:
         logger.info("Initializing TextToSQL service")
         try:
@@ -66,19 +67,19 @@ def get_text_to_sql_service() -> TextToSQLService:
         except Exception as e:
             logger.error(f"Failed to initialize TextToSQL service: {str(e)}")
             raise ConfigurationError(f"TextToSQL service initialization failed: {str(e)}")
-
+    
     return _text_to_sql_service
 
 
 def reset_services():
     """Reset all service singletons (useful for testing)"""
     global _database_service, _llm_service, _text_to_sql_service
-
+    
     logger.info("Resetting all service singletons")
     _database_service = None
     _llm_service = None
     _text_to_sql_service = None
-
+    
     # Clear lru_cache
     get_database_service.cache_clear()
     get_llm_service.cache_clear()
@@ -91,4 +92,7 @@ def get_service_status() -> dict:
         "database_service_initialized": _database_service is not None,
         "llm_service_initialized": _llm_service is not None,
         "text_to_sql_service_initialized": _text_to_sql_service is not None,
+        "current_llm_provider": settings.DEFAULT_LLM_PROVIDER.upper(),
+        "ollama_model": settings.OLLAMA_MODEL,
+        "ollama_base_url": settings.OLLAMA_BASE_URL,
     }

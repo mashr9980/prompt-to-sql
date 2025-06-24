@@ -1,17 +1,17 @@
-"""Main FastAPI application"""
-
 import logging
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 
-from .config import settings
-from .routes import health, database, query
-from .core.dependencies import get_text_to_sql_service, reset_services
-from .core.exceptions import (
+from app.config import settings
+from app.routes import health, database, query, knowledge_base
+from app.core.dependencies import get_text_to_sql_service, reset_services
+from app.core.exceptions import (
     DatabaseConnectionError,
     LLMServiceError,
     QueryExecutionError,
@@ -19,14 +19,11 @@ from .core.exceptions import (
     ConfigurationError
 )
 
-# Configure logging
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL),
     format=settings.LOG_FORMAT,
     handlers=[
         logging.StreamHandler(),
-        # Add file handler if needed
-        # logging.FileHandler("app.log")
     ]
 )
 
@@ -35,15 +32,12 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan management"""
-    logger.info("Starting Text-to-SQL API...")
+    logger.info("Starting AI Database Query System...")
     
     try:
-        # Initialize services during startup
         logger.info("Initializing services...")
         service = get_text_to_sql_service()
         
-        # Test database connection
         if service.database_service.test_connection():
             logger.info("Database connection successful")
         else:
@@ -58,77 +52,47 @@ async def lifespan(app: FastAPI):
         raise
     
     finally:
-        logger.info("Shutting down Text-to-SQL API...")
-        # Cleanup if needed
+        logger.info("Shutting down AI Database Query System...")
         reset_services()
         logger.info("Application shutdown completed")
 
 
 def create_app() -> FastAPI:
-    """Create and configure FastAPI application"""
-    
     app = FastAPI(
-        title=settings.API_TITLE,
-        version=settings.API_VERSION,
+        title="AI Database Query System",
+        version="1.0.0",
         description="""
-        ## Text-to-SQL API
-
+        ## AI Database Query System
         Convert natural language queries to SQL and execute them against your database.
-
-        ### Features
-        - 🤖 AI-powered natural language to SQL conversion
-        - 🏢 Optimized for business management systems
-        - 🌐 Arabic/English mixed content support
-        - ⚡ High-performance caching
-        - 📊 Comprehensive database schema exploration
-        - 🔍 Direct SQL execution capabilities
-
-        ### Quick Start
-        1. Check API health: `GET /health/quick`
-        2. View available tables: `GET /database/tables/names`
-        3. Execute a query: `POST /query/`
-
-        ### Example Query
-        ```json
-        {
-            "command": "Show me all employees with salary greater than 5000",
-            "include_sql": true
-        }
-        ```
         """,
         docs_url="/docs",
         redoc_url="/redoc",
         lifespan=lifespan
     )
     
-    # Add CORS middleware
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.CORS_ORIGINS,
+        allow_origins=["*"],
         allow_credentials=True,
-        allow_methods=settings.CORS_METHODS,
-        allow_headers=settings.CORS_HEADERS,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
     
-    # Add request logging middleware
     @app.middleware("http")
     async def log_requests(request: Request, call_next):
         start_time = time.time()
         
-        # Log request
         logger.info(f"Request: {request.method} {request.url.path}")
         
         try:
             response = await call_next(request)
             process_time = time.time() - start_time
             
-            # Log response
             logger.info(
                 f"Response: {request.method} {request.url.path} "
                 f"- {response.status_code} - {process_time:.3f}s"
             )
             
-            # Add timing header
             response.headers["X-Process-Time"] = str(process_time)
             
             return response
@@ -141,17 +105,53 @@ def create_app() -> FastAPI:
             )
             raise
     
-    # Include routers
-    app.include_router(health.router)
-    app.include_router(database.router)
-    app.include_router(query.router)
+    static_path = Path(__file__).parent / "static"
+    if static_path.exists():
+        app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
+        logger.info(f"Static files mounted from: {static_path}")
+    else:
+        static_path.mkdir(parents=True, exist_ok=True)
+        logger.warning(f"Created static directory: {static_path}")
+        logger.warning("Please add your frontend files to the static directory")
     
-    # Root endpoint
-    @app.get("/app")
-    async def serve_user_app():
-        return FileResponse("static/index.html")
+    app.include_router(health.router, prefix="/api")
+    app.include_router(database.router, prefix="/api")
+    app.include_router(query.router, prefix="/api")
+    app.include_router(knowledge_base.router, prefix="/api")
     
-    # Global exception handlers
+    @app.get("/", tags=["Root"])
+    async def root():
+        return {
+            "message": "AI Database Query System is running",
+            "version": "1.0.0",
+            "frontend": "/app",
+            "docs": "/docs",
+            "health": "/api/health/quick",
+            "knowledge_base": "/api/knowledge-base/status",
+            "status": "operational"
+        }
+    
+    @app.get("/app", tags=["Frontend"])
+    async def serve_frontend():
+        static_index = static_path / "index.html"
+        if static_index.exists():
+            return FileResponse(str(static_index))
+        else:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": "Frontend not found",
+                    "message": "Please ensure the following files exist:",
+                    "required_files": [
+                        "static/index.html",
+                        "static/js/app.js", 
+                        "static/styles/style.css"
+                    ],
+                    "current_path": str(static_path),
+                    "setup_instructions": "1. Create 'static' folder in project root, 2. Add HTML, CSS, JS files, 3. Restart server"
+                }
+            )
+    
     @app.exception_handler(DatabaseConnectionError)
     async def database_connection_error_handler(request: Request, exc: DatabaseConnectionError):
         logger.error(f"Database connection error: {str(exc)}")
@@ -232,12 +232,11 @@ def create_app() -> FastAPI:
             content={
                 "error": "Internal Server Error",
                 "message": "An unexpected error occurred. Please try again later.",
-                "detail": "Internal server error" if not settings.LOG_LEVEL == "DEBUG" else str(exc)
+                "detail": "Internal server error" if settings.LOG_LEVEL != "DEBUG" else str(exc)
             }
         )
     
     return app
 
 
-# Create app instance
 app = create_app()

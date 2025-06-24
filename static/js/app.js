@@ -6,7 +6,7 @@ class DatabaseQueryApp {
 
     getBaseURL() {
         if (window.location.protocol === 'file:') {
-            return 'http://127.0.0.1:8000';
+            return 'https://tx5npat3ybvphq-8000.proxy.runpod.net';
         }
         return window.location.origin;
     }
@@ -190,14 +190,14 @@ class DatabaseQueryApp {
                 })
             });
 
-            this.displayQueryResult(response, resultContent);
+            this.displaySqlOnlyResult(response, resultContent);
             resultsContainer.classList.remove('hidden');
             resultsContainer.scrollIntoView({ behavior: 'smooth' });
 
             if (response.success) {
-                this.showToast('Query executed successfully');
+                this.showToast('SQL query generated successfully');
             } else {
-                this.showToast('Query completed with warnings', 'error');
+                this.showToast('Query generation failed', 'error');
             }
 
         } catch (error) {
@@ -256,7 +256,7 @@ class DatabaseQueryApp {
         this.showLoading();
         
         try {
-            const response = await this.makeRequest('/api/database/info');
+            const response = await this.makeRequest('/api/database/tables');
 
             if (response.table_names && response.table_names.length > 0) {
                 this.displayTables(response.table_names, tablesContainer);
@@ -283,14 +283,14 @@ class DatabaseQueryApp {
         this.showLoading();
         
         try {
-            const response = await this.makeRequest(`/api/database/table/${encodeURIComponent(tableName)}`);
+            const response = await this.makeRequest(`/api/database/tables/${encodeURIComponent(tableName)}`);
 
-            if (response.success) {
+            if (response.schema) {
                 schemaContainer.textContent = response.schema;
                 detailsContainer.classList.remove('hidden');
                 this.showToast(`Loaded schema for ${tableName}`);
             } else {
-                this.displayError(response.error, schemaContainer);
+                this.displayError(response.error || 'No schema found', schemaContainer);
                 detailsContainer.classList.remove('hidden');
             }
 
@@ -305,7 +305,7 @@ class DatabaseQueryApp {
 
     async checkSystemHealth() {
         try {
-            const response = await this.makeRequest('/api/health');
+            const response = await this.makeRequest('/api/health/quick');
             this.updateStatusIndicator(response.status === 'healthy');
         } catch (error) {
             this.updateStatusIndicator(false);
@@ -360,24 +360,31 @@ class DatabaseQueryApp {
         }
     }
 
-    displayQueryResult(response, container) {
+    displaySqlOnlyResult(response, container) {
         const resultItem = document.createElement('div');
         resultItem.className = 'result-content fade-in';
 
         if (response.success) {
             let content = `<div class="result-item">`;
             
-            if (response.sql_query) {
-                content += `
-                    <h4><i class="fas fa-code"></i> Generated SQL Query</h4>
-                    <pre>${this.escapeHtml(response.sql_query)}</pre>
-                `;
-            }
-            
             content += `
-                <h4><i class="fas fa-chart-line"></i> Result</h4>
-                <div class="answer">${this.formatResult(response.result)}</div>
-                <div class="execution-time">Execution time: ${response.execution_time}s</div>
+                <h4><i class="fas fa-code"></i> Generated SQL Query</h4>
+                <div class="sql-query-container">
+                    <pre class="sql-query">${this.escapeHtml(response.result || response.sql_query)}</pre>
+                    <div class="sql-actions">
+                        <button class="btn-secondary copy-sql-btn" onclick="app.copyGeneratedSql('${this.escapeForAttribute(response.result || response.sql_query)}')">
+                            <i class="fas fa-copy"></i> Copy SQL
+                        </button>
+                        <button class="btn-secondary test-sql-btn" onclick="app.moveToSqlTab('${this.escapeForAttribute(response.result || response.sql_query)}')">
+                            <i class="fas fa-play"></i> Test Query
+                        </button>
+                    </div>
+                </div>
+                <div class="execution-time">Generation time: ${response.execution_time}s</div>
+                <div class="sql-note">
+                    <i class="fas fa-info-circle"></i>
+                    Use the "Test Query" button to execute this SQL and see the results.
+                </div>
             </div>`;
             
             resultItem.innerHTML = content;
@@ -386,7 +393,7 @@ class DatabaseQueryApp {
                 <div class="error-message">
                     <i class="fas fa-exclamation-triangle"></i>
                     <strong>Error:</strong> ${this.escapeHtml(response.error)}
-                    <div class="execution-time">Execution time: ${response.execution_time}s</div>
+                    <div class="execution-time">Generation time: ${response.execution_time}s</div>
                 </div>
             `;
         }
@@ -402,7 +409,7 @@ class DatabaseQueryApp {
         if (response.success) {
             const content = `
                 <div class="result-item">
-                    <h4><i class="fas fa-database"></i> SQL Result</h4>
+                    <h4><i class="fas fa-database"></i> SQL Execution Result</h4>
                     <div class="answer">${this.formatResult(response.result)}</div>
                     <div class="execution-time">Execution time: ${response.execution_time}s</div>
                 </div>
@@ -675,6 +682,38 @@ class DatabaseQueryApp {
         }
     }
 
+    async copyGeneratedSql(sqlQuery) {
+        try {
+            if (navigator.clipboard) {
+                await navigator.clipboard.writeText(sqlQuery);
+            } else {
+                const textArea = document.createElement('textarea');
+                textArea.value = sqlQuery;
+                document.body.appendChild(textArea);
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+            }
+            
+            this.showToast('SQL copied to clipboard');
+        } catch (error) {
+            this.showToast('Failed to copy SQL', 'error');
+        }
+    }
+
+    moveToSqlTab(sqlQuery) {
+        // Switch to SQL tab
+        this.setActiveSection('sql');
+        
+        // Set the SQL query in the SQL input
+        document.getElementById('sqlInput').value = sqlQuery;
+        
+        // Focus on the SQL input
+        document.getElementById('sqlInput').focus();
+        
+        this.showToast('SQL moved to Direct SQL tab for testing');
+    }
+
     clearResults(containerId) {
         const container = document.getElementById(containerId);
         container.classList.add('hidden');
@@ -693,11 +732,24 @@ class DatabaseQueryApp {
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#039;');
     }
+
+    escapeForAttribute(text) {
+        if (text === null || text === undefined) return '';
+        return String(text)
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#x27;')
+            .replace(/\\/g, '\\\\')
+            .replace(/\n/g, '\\n')
+            .replace(/\r/g, '\\r');
+    }
 }
+
+// Global app instance for onclick handlers
+let app;
 
 document.addEventListener('DOMContentLoaded', () => {
     try {
-        new DatabaseQueryApp();
+        app = new DatabaseQueryApp();
     } catch (error) {
         console.error('Failed to initialize app:', error);
         document.body.innerHTML = `

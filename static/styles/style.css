@@ -812,3 +812,293 @@ body {
     from { transform: translateX(-20px); opacity: 0; }
     to { transform: translateX(0); opacity: 1; }
 }
+
+/* Additional styles for SQL-only display */
+
+.sql-query-container {
+    background: white;
+    border-radius: 12px;
+    border: 1px solid #e5e7eb;
+    overflow: hidden;
+    margin: 1rem 0;
+}
+
+.sql-query {
+    background: #1f2937;
+    color: #f9fafb;
+    padding: 1.5rem;
+    margin: 0;
+    font-family: 'Monaco', 'Consolas', 'SF Mono', monospace;
+    font-size: 0.9rem;
+    line-height: 1.4;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.sql-actions {
+    display: flex;
+    gap: 1rem;
+    padding: 1rem 1.5rem;
+    background: #f9fafb;
+    border-top: 1px solid #e5e7eb;
+}
+
+.copy-sql-btn, .test-sql-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    background: white;
+    color: #374151;
+    font-size: 0.9rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    text-decoration: none;
+}
+
+.copy-sql-btn:hover, .test-sql-btn:hover {
+    background: #667eea;
+    color: white;
+    border-color: #667eea;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(102, 126, 234, 0.2);
+}
+
+.test-sql-btn {
+    background: linear-gradient(135deg, #10b981, #059669);
+    color: white;
+    border-color: #10b981;
+}
+
+.test-sql-btn:hover {
+    background: linear-gradient(135deg, #059669, #047857);
+    border-color: #059669;
+}
+
+.sql-note {
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    color: #1d4ed8;
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+    margin-top: 1rem;
+    font-size: 0.9rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.sql-note i {
+    color: #3b82f6;
+}
+
+/* Responsive improvements for SQL display */
+@media (max-width: 768px) {
+    .sql-actions {
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+    
+    .copy-sql-btn, .test-sql-btn {
+        justify-content: center;
+    }
+    
+    .sql-query {
+        font-size: 0.8rem;
+        padding: 1rem;
+    }
+}
+
+/* Enhanced result item styling */
+.result-item {
+    margin-bottom: 1.5rem;
+    padding: 0;
+    background: transparent;
+    border-radius: 12px;
+    border: none;
+    border-left: 4px solid #667eea;
+    background: #f9fafb;
+    padding: 1.5rem;
+}
+
+.result-item h4 {
+    color: #374151;
+    margin-bottom: 1rem;
+    font-size: 1.1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.result-item h4 i {
+    color: #667eea;
+}
+
+/* Loading overlay improvements */
+.loading-overlay .loading-spinner p {
+    margin-top: 1rem;
+    color: #6b7280;
+    font-size: 1rem;
+}
+
+/* Toast improvements */
+.toast {
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.toast.success {
+    background: linear-gradient(135deg, #10b981, #059669);
+}
+
+.toast.error {
+    background: linear-gradient(135deg, #ef4444, #dc2626);
+}
+
+/* Enhanced button styles */
+.btn-primary:active, .btn-secondary:active {
+    transform: translateY(0);
+}
+
+.btn-primary:focus, .btn-secondary:focus {
+    outline: 2px solid #667eea;
+    outline-offset: 2px;
+}
+
+/* Improved table styling for SQL results */
+.table-result {
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+.table-result table {
+    box-shadow: none;
+    border-radius: 0;
+}
+
+.table-result th {
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    color: white;
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 0.8rem;
+    letter-spacing: 0.5px;
+}
+
+.table-result td {
+    font-size: 0.9rem;
+}
+
+.table-result tr:nth-child(even) {
+    background: #f9fafb;
+}
+
+.table-result tr:hover {
+    background: #e0e7ff;
+}
+
+/* Section header improvements */
+.section-header {
+    position: relative;
+    overflow: hidden;
+}
+
+.section-header::before {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 60px;
+    height: 3px;
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    border-radius: 2px;
+}
+
+/* Navigation improvements */
+.nav-item {
+    position: relative;
+    overflow: hidden;
+}
+
+.nav-item::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.4), transparent);
+    transition: left 0.6s ease;
+}
+
+.nav-item:hover::before {
+    left: 100%;
+}
+
+/* Quick query suggestions improvements */
+.suggestion-btn {
+    position: relative;
+    overflow: hidden;
+}
+
+.suggestion-btn::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(102, 126, 234, 0.1), transparent);
+    transition: left 0.5s ease;
+}
+
+.suggestion-btn:hover::before {
+    left: 100%;
+}
+
+/* Error message improvements */
+.error-message {
+    border-left: 4px solid #ef4444;
+    position: relative;
+}
+
+.error-message::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 4px;
+    height: 100%;
+    background: linear-gradient(to bottom, #ef4444, #dc2626);
+}
+
+/* Success message styling */
+.success-message {
+    border-left: 4px solid #10b981;
+    position: relative;
+}
+
+.success-message::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 4px;
+    height: 100%;
+    background: linear-gradient(to bottom, #10b981, #059669);
+}
+
+/* Execution time styling */
+.execution-time {
+    font-family: 'Monaco', 'Consolas', 'SF Mono', monospace;
+    background: #f3f4f6;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    display: inline-block;
+    margin-top: 0.5rem;
+}
