@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     
     # Ollama Configuration
     OLLAMA_BASE_URL: str = "http://localhost:11434"
-    OLLAMA_MODEL: str = "qwen3:1.7b"
+    OLLAMA_MODEL: str = "qwen2.5:7b"
     OLLAMA_TEMPERATURE: float = 0.0
     OLLAMA_MAX_TOKENS: int = 4000
     
