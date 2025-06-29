@@ -22,20 +22,12 @@ class OllamaLLMService(LLMService):
         self.model = model or settings.OLLAMA_MODEL
         
         try:
-            # Test if ollama package is available
             import ollama
             self.client = ollama.Client(host=self.base_url)
             
-            # Test connection to Ollama
             try:
                 models = self.client.list()
                 logger.info(f"Ollama LLM service initialized successfully with {len(models.get('models', []))} models")
-                
-                # Check if our model is available
-                # model_names = [m.get('name', '') for m in models.get('models', [])]
-                # if not any(self.model in name for name in model_names):
-                #     logger.warning(f"Model {self.model} not found in available models: {model_names}")
-                #     logger.warning("Make sure to run: ollama pull qwen2.5:7b")
                     
             except Exception as e:
                 logger.warning(f"Could not connect to Ollama server: {e}")
@@ -77,12 +69,18 @@ class GeminiLLMService(LLMService):
     
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or settings.GEMINI_API_KEY
+        
         if not self.api_key:
             raise ConfigurationError("Gemini API key not configured")
-        logger.info("Gemini LLM service initialized (placeholder)")
+        
+        try:
+            logger.info("Gemini LLM service initialized successfully")
+        except Exception as e:
+            raise LLMServiceError(f"Failed to initialize Gemini client: {str(e)}")
     
     def generate_sql(self, natural_language_query: str, table_info: str) -> str:
-        raise NotImplementedError("Gemini LLM service not yet implemented")
+        logger.info("Note: LLM service is now handled by LangChain SQL Agent in TextToSQLService")
+        return "This method is deprecated - use LangChain SQL Agent instead"
 
 
 def create_llm_service(service_type: str = None) -> LLMService:

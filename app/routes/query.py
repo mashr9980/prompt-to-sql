@@ -1,5 +1,3 @@
-"""Query execution routes - Modified for SQL-only output"""
-
 import logging
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -25,7 +23,7 @@ async def execute_natural_language_query(
     - Support for complex business queries
     - Arabic/English mixed content support
     - Optimized for business management systems
-    - Returns only the SQL query for manual testing
+    - Returns clean, executable SQL query
     
     **Example queries:**
     - "Show me all employees with salary greater than 5000"
@@ -33,7 +31,7 @@ async def execute_natural_language_query(
     - "Get attendance records for last week"
     
     **Response:**
-    The response will contain only the generated SQL query in the `result` field.
+    The response will contain the generated SQL query in the `sql_query` field.
     You can then test this query manually in your database client or use the
     Direct SQL execution endpoint.
     """
@@ -54,7 +52,7 @@ async def execute_natural_language_query(
         if not response.success:
             logger.warning(f"SQL generation failed: {response.error}")
         else:
-            logger.info(f"SQL generated successfully: {response.result[:100]}...")
+            logger.info(f"SQL generated successfully: {response.sql_query[:100] if response.sql_query else 'No SQL'}...")
         
         return response
     
@@ -100,15 +98,12 @@ async def execute_direct_sql_query(
                 detail="SQL query cannot be empty"
             )
         
-        # Basic SQL injection protection (enhanced)
         dangerous_keywords = ['DROP', 'DELETE', 'TRUNCATE', 'ALTER', 'CREATE', 'INSERT', 'UPDATE']
         sql_upper = request.sql_query.upper()
         
         for keyword in dangerous_keywords:
             if keyword in sql_upper:
                 logger.warning(f"Potentially dangerous SQL detected: {keyword}")
-                # In production, you might want to block these entirely
-                # For now, we'll just log and proceed with caution
         
         response = await service.execute_direct_sql(request.sql_query)
         
@@ -203,18 +198,18 @@ async def get_example_queries():
             "Use clear column names when possible",
             "Specify sorting preferences (e.g., 'highest salary first')",
             "Include filtering criteria for better results",
-            "The system generates SQL only - test the query separately",
+            "The system generates clean SQL ready for execution",
             "Arabic and English text are both supported",
             "Use business terms rather than technical database terms"
         ],
         "workflow": [
             "1. Enter your natural language query",
             "2. Get the generated SQL query",
-            "3. Copy or move the SQL to the Direct SQL tab",
+            "3. Copy the SQL to the Direct SQL tab if needed",
             "4. Execute the SQL to see actual results",
             "5. Modify the SQL if needed for better results"
         ],
-        "note": "This endpoint generates SQL queries only. Use the Direct SQL endpoint to execute and see results."
+        "note": "This endpoint generates clean SQL queries ready for execution."
     }
 
 
@@ -230,7 +225,6 @@ async def validate_sql_query(
     and dangerous operations.
     """
     try:
-        # Basic validation
         if not sql_query.strip():
             return {
                 "valid": False,
@@ -240,7 +234,6 @@ async def validate_sql_query(
         
         sql_upper = sql_query.upper().strip()
         
-        # Check for dangerous operations
         dangerous_ops = ['DROP', 'DELETE', 'TRUNCATE', 'ALTER', 'CREATE']
         dangerous_found = [op for op in dangerous_ops if op in sql_upper]
         
@@ -251,7 +244,6 @@ async def validate_sql_query(
                 "suggestions": ["Use SELECT queries for data retrieval", "Avoid data modification operations"]
             }
         
-        # Check for basic SQL structure
         if not any(keyword in sql_upper for keyword in ['SELECT', 'WITH']):
             return {
                 "valid": False,
@@ -259,7 +251,6 @@ async def validate_sql_query(
                 "suggestions": ["Start your query with SELECT", "Use proper SQL syntax"]
             }
         
-        # Basic parentheses matching
         if sql_query.count('(') != sql_query.count(')'):
             return {
                 "valid": False,
@@ -301,7 +292,6 @@ async def generate_query_variations(
         
         variations = []
         
-        # Generate 3 different variations with slightly different prompts
         variation_prompts = [
             f"{request.command}",
             f"{request.command} (optimize for performance)",
@@ -315,10 +305,10 @@ async def generate_query_variations(
                     include_sql=True
                 )
                 
-                if response.success and response.result:
+                if response.success and response.sql_query:
                     variations.append({
                         "variation": i + 1,
-                        "sql_query": response.result,
+                        "sql_query": response.sql_query,
                         "prompt_hint": ["Basic query", "Performance optimized", "With joins"][i],
                         "execution_time": response.execution_time
                     })
@@ -375,7 +365,6 @@ async def get_query_stats():
     """
     Get statistics about query generation performance and usage.
     """
-    # This would typically come from a database or monitoring system
     return {
         "message": "Query statistics feature not implemented yet",
         "planned_metrics": [

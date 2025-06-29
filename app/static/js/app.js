@@ -223,21 +223,21 @@ class DatabaseQueryApp {
         this.showLoading();
         
         try {
-            const response = await this.makeRequest('/api/sql', {
+            const response = await this.makeRequest('/api/query/sql', {
                 method: 'POST',
                 body: JSON.stringify({
                     sql_query: query
                 })
             });
 
-            this.displaySqlResult(response, resultContent);
+            this.displaySqlExecutionResult(response, resultContent);
             resultsContainer.classList.remove('hidden');
             resultsContainer.scrollIntoView({ behavior: 'smooth' });
 
             if (response.success) {
                 this.showToast('SQL executed successfully');
             } else {
-                this.showToast('SQL completed with errors', 'error');
+                this.showToast('SQL execution failed', 'error');
             }
 
         } catch (error) {
@@ -370,12 +370,12 @@ class DatabaseQueryApp {
             content += `
                 <h4><i class="fas fa-code"></i> Generated SQL Query</h4>
                 <div class="sql-query-container">
-                    <pre class="sql-query">${this.escapeHtml(response.result || response.sql_query)}</pre>
+                    <pre class="sql-query">${this.escapeHtml(response.sql_query || 'No SQL generated')}</pre>
                     <div class="sql-actions">
-                        <button class="btn-secondary copy-sql-btn" onclick="app.copyGeneratedSql('${this.escapeForAttribute(response.result || response.sql_query)}')">
+                        <button class="btn-secondary copy-sql-btn" onclick="app.copyGeneratedSql('${this.escapeForAttribute(response.sql_query || '')}')">
                             <i class="fas fa-copy"></i> Copy SQL
                         </button>
-                        <button class="btn-secondary test-sql-btn" onclick="app.moveToSqlTab('${this.escapeForAttribute(response.result || response.sql_query)}')">
+                        <button class="btn-secondary test-sql-btn" onclick="app.moveToSqlTab('${this.escapeForAttribute(response.sql_query || '')}')">
                             <i class="fas fa-play"></i> Test Query
                         </button>
                     </div>
@@ -402,16 +402,23 @@ class DatabaseQueryApp {
         container.appendChild(resultItem);
     }
 
-    displaySqlResult(response, container) {
+    displaySqlExecutionResult(response, container) {
         const resultItem = document.createElement('div');
         resultItem.className = 'result-content fade-in';
 
         if (response.success) {
             const content = `
                 <div class="result-item">
-                    <h4><i class="fas fa-database"></i> SQL Execution Result</h4>
-                    <div class="answer">${this.formatResult(response.result)}</div>
+                    <h4><i class="fas fa-database"></i> SQL Execution Completed</h4>
+                    <div class="sql-executed">
+                        <strong>Query:</strong>
+                        <pre class="sql-query">${this.escapeHtml(response.sql_query)}</pre>
+                    </div>
                     <div class="execution-time">Execution time: ${response.execution_time}s</div>
+                    <div class="success-message">
+                        <i class="fas fa-check-circle"></i>
+                        SQL query executed successfully. Check your database for results.
+                    </div>
                 </div>
             `;
             resultItem.innerHTML = content;
@@ -518,111 +525,6 @@ class DatabaseQueryApp {
         `;
     }
 
-    formatResult(result) {
-        if (!result) return 'No data returned';
-        
-        if (typeof result === 'string') {
-            try {
-                const parsed = JSON.parse(result);
-                if (Array.isArray(parsed)) {
-                    return this.createTable(parsed);
-                }
-                return this.escapeHtml(result);
-            } catch {
-                if (result.startsWith('[') && result.includes('(') && result.includes(')')) {
-                    return this.formatTupleString(result);
-                }
-                return this.escapeHtml(result);
-            }
-        }
-        
-        if (Array.isArray(result)) {
-            return this.createTable(result);
-        }
-        
-        return this.escapeHtml(JSON.stringify(result, null, 2));
-    }
-
-    formatTupleString(result) {
-        try {
-            const cleanResult = result.replace(/'/g, '"');
-            const parsed = JSON.parse(cleanResult);
-            
-            if (Array.isArray(parsed) && parsed.length > 0) {
-                const headers = parsed[0].map((_, index) => `Column ${index + 1}`);
-                return this.createTableFromArray(headers, parsed);
-            }
-        } catch (error) {
-            console.warn('Failed to parse tuple string:', error);
-        }
-        
-        return `<pre>${this.escapeHtml(result)}</pre>`;
-    }
-
-    createTable(data) {
-        if (!Array.isArray(data) || data.length === 0) {
-            return '<p>No records found</p>';
-        }
-
-        if (typeof data[0] === 'object' && data[0] !== null) {
-            const headers = Object.keys(data[0]);
-            return this.createTableFromObjects(headers, data);
-        }
-
-        return `<pre>${this.escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
-    }
-
-    createTableFromObjects(headers, data) {
-        let table = '<div class="table-result"><table>';
-        
-        table += '<thead><tr>';
-        headers.forEach(header => {
-            table += `<th>${this.escapeHtml(header)}</th>`;
-        });
-        table += '</tr></thead>';
-        
-        table += '<tbody>';
-        data.forEach(row => {
-            table += '<tr>';
-            headers.forEach(header => {
-                const value = row[header];
-                table += `<td>${this.escapeHtml(value !== null ? String(value) : '')}</td>`;
-            });
-            table += '</tr>';
-        });
-        table += '</tbody>';
-        
-        table += '</table></div>';
-        return table;
-    }
-
-    createTableFromArray(headers, data) {
-        let table = '<div class="table-result"><table>';
-        
-        table += '<thead><tr>';
-        headers.forEach(header => {
-            table += `<th>${this.escapeHtml(header)}</th>`;
-        });
-        table += '</tr></thead>';
-        
-        table += '<tbody>';
-        data.forEach(row => {
-            table += '<tr>';
-            if (Array.isArray(row)) {
-                row.forEach(cell => {
-                    table += `<td>${this.escapeHtml(cell !== null ? String(cell) : '')}</td>`;
-                });
-            } else {
-                table += `<td>${this.escapeHtml(String(row))}</td>`;
-            }
-            table += '</tr>';
-        });
-        table += '</tbody>';
-        
-        table += '</table></div>';
-        return table;
-    }
-
     formatSql() {
         const sqlInput = document.getElementById('sqlInput');
         const query = sqlInput.value;
@@ -702,13 +604,10 @@ class DatabaseQueryApp {
     }
 
     moveToSqlTab(sqlQuery) {
-        // Switch to SQL tab
         this.setActiveSection('sql');
         
-        // Set the SQL query in the SQL input
         document.getElementById('sqlInput').value = sqlQuery;
         
-        // Focus on the SQL input
         document.getElementById('sqlInput').focus();
         
         this.showToast('SQL moved to Direct SQL tab for testing');
@@ -744,7 +643,6 @@ class DatabaseQueryApp {
     }
 }
 
-// Global app instance for onclick handlers
 let app;
 
 document.addEventListener('DOMContentLoaded', () => {

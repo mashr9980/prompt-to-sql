@@ -1,10 +1,12 @@
 import time
 import logging
-from typing import Optional, Dict, Any, List
+import json
+from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime, date, timedelta
 from langchain_community.utilities import SQLDatabase
 from langchain_openai import ChatOpenAI
 from langchain_ollama import ChatOllama
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 from app.services.schema_store import PersistentEnhancedSchemaVectorStore
 
@@ -25,18 +27,23 @@ class TextToSQLService:
         
         try:
             if settings.DEFAULT_LLM_PROVIDER.lower() == "ollama":
-                logger.info("Initializing Ollama LLM for text-to-SQL")
                 self.llm = ChatOllama(
                     model=settings.OLLAMA_MODEL,
                     base_url=settings.OLLAMA_BASE_URL,
-                    temperature=settings.OLLAMA_TEMPERATURE,
+                    temperature=0.0,
                     num_predict=settings.OLLAMA_MAX_TOKENS
                 )
+            elif settings.DEFAULT_LLM_PROVIDER.lower() == "gemini":
+                self.llm = ChatGoogleGenerativeAI(
+                    model=settings.GEMINI_MODEL,
+                    temperature=0.0,
+                    google_api_key=settings.GEMINI_API_KEY,
+                    max_output_tokens=settings.GEMINI_MAX_TOKENS
+                )
             else:
-                logger.info("Initializing OpenAI LLM for text-to-SQL")
                 self.llm = ChatOpenAI(
                     model=settings.OPENAI_MODEL,
-                    temperature=settings.OPENAI_TEMPERATURE,
+                    temperature=0.0,
                     api_key=settings.OPENAI_API_KEY,
                     max_tokens=settings.OPENAI_MAX_TOKENS
                 )
@@ -44,414 +51,398 @@ class TextToSQLService:
             self.sql_db = SQLDatabase.from_uri(settings.DATABASE_URL)
             self.enhanced_schema_store = PersistentEnhancedSchemaVectorStore(self.database_service)
 
-            logger.info(f"TextToSQLService initialized with {settings.DEFAULT_LLM_PROVIDER.upper()} LLM and Vector Database")
+            logger.info(f"TextToSQLService initialized with {settings.DEFAULT_LLM_PROVIDER.upper()} LLM")
             
         except Exception as e:
             logger.error(f"Failed to initialize TextToSQLService: {str(e)}")
             self.enhanced_schema_store = None
     
     def _get_current_date_context(self) -> str:
-        """Get current date context for SQL generation"""
         now = datetime.now()
         today = date.today()
-        
         week_start = today - timedelta(days=today.weekday())
         month_start = today.replace(day=1)
         year_start = today.replace(month=1, day=1)
         
-        return f"""
-CURRENT DATE CONTEXT (Use these exact values in SQL):
-- Today: '{today.strftime('%Y-%m-%d')}'
-- Current Year: {now.year}
-- Current Month: {now.month}
-- Current Day: {now.day}
-- Week Start: '{week_start.strftime('%Y-%m-%d')}'
-- Month Start: '{month_start.strftime('%Y-%m-%d')}'
-- Year Start: '{year_start.strftime('%Y-%m-%d')}'
-"""
+        return f"""Current Date and Time Information:
+Today's Date: {today.strftime('%Y-%m-%d')}
+Current Year: {now.year}
+Current Month: {now.month} ({now.strftime('%B')})
+Current Day: {now.day}
+Current Time: {now.strftime('%H:%M:%S')}
+Week Start (Monday): {week_start.strftime('%Y-%m-%d')}
+Month Start: {month_start.strftime('%Y-%m-%d')}
+Year Start: {year_start.strftime('%Y-%m-%d')}
+Day of Week: {now.strftime('%A')}"""
 
-    def _build_table_context_from_metadata(self, search_results: List) -> str:
-        """Build detailed table context from vector search results"""
-        context_parts = []
+    async def _analyze_user_intent(self, user_query: str) -> Dict[str, Any]:
+        """Use LLM to analyze user intent and requirements"""
         
-        for table_name, schema_text, metadata in search_results:
-            context_parts.append(f"=== TABLE: {table_name} ===")
+        intent_prompt = f"""Analyze this database query request and extract the user's intent and requirements.
+
+User Query: "{user_query}"
+
+Analyze and provide a JSON response with the following structure:
+{{
+    "query_type": "select|insert|update|delete|aggregate|reporting",
+    "main_entities": ["entity1", "entity2"],
+    "time_filters": {{
+        "has_time_filter": true/false,
+        "time_period": "today|this_week|this_month|this_year|specific_date|date_range",
+        "time_description": "description of time requirement"
+    }},
+    "aggregations": {{
+        "has_aggregation": true/false,
+        "functions": ["count", "sum", "avg", "max", "min"],
+        "group_by_needed": true/false
+    }},
+    "filters": {{
+        "has_filters": true/false,
+        "filter_types": ["comparison", "contains", "equals", "range"],
+        "filter_description": "description of filtering needs"
+    }},
+    "relationships": {{
+        "needs_joins": true/false,
+        "relationship_description": "description of data relationships needed"
+    }},
+    "output_requirements": {{
+        "limit_needed": true/false,
+        "suggested_limit": 100,
+        "sorting_needed": true/false,
+        "sort_description": "description of sorting requirements"
+    }},
+    "business_context": "description of what user wants to achieve"
+}}
+
+Provide only the JSON response:"""
+
+        try:
+            if hasattr(self.llm, 'ainvoke'):
+                response = await self.llm.ainvoke(intent_prompt)
+            else:
+                response = self.llm.invoke(intent_prompt)
+            
+            if hasattr(response, 'content'):
+                analysis_text = response.content
+            else:
+                analysis_text = str(response)
+            
+            try:
+                analysis_text = analysis_text.strip()
+                if analysis_text.startswith('```json'):
+                    analysis_text = analysis_text[7:]
+                if analysis_text.startswith('```'):
+                    analysis_text = analysis_text[3:]
+                if analysis_text.endswith('```'):
+                    analysis_text = analysis_text[:-3]
+                
+                return json.loads(analysis_text.strip())
+            except json.JSONDecodeError:
+                logger.warning("Failed to parse intent analysis JSON")
+                return self._get_default_intent()
+                
+        except Exception as e:
+            logger.warning(f"Intent analysis failed: {e}")
+            return self._get_default_intent()
+
+    def _get_default_intent(self) -> Dict[str, Any]:
+        """Default intent structure when LLM analysis fails"""
+        return {
+            "query_type": "select",
+            "main_entities": [],
+            "time_filters": {"has_time_filter": False, "time_period": "", "time_description": ""},
+            "aggregations": {"has_aggregation": False, "functions": [], "group_by_needed": False},
+            "filters": {"has_filters": False, "filter_types": [], "filter_description": ""},
+            "relationships": {"needs_joins": False, "relationship_description": ""},
+            "output_requirements": {"limit_needed": True, "suggested_limit": 100, "sorting_needed": False, "sort_description": ""},
+            "business_context": "General data retrieval"
+        }
+
+    async def _select_relevant_tables(self, user_query: str, search_results: List[Tuple], intent_analysis: Dict) -> List[Tuple]:
+        """Use LLM to intelligently select the most relevant tables"""
+        
+        if not search_results:
+            return []
+        
+        table_descriptions = []
+        for i, (table_name, schema_text, metadata) in enumerate(search_results):
+            purpose = metadata.get('llm_analysis', {}).get('purpose', 'Data storage') if metadata else 'Data storage'
+            columns = []
+            if metadata and metadata.get("schema"):
+                columns = [col['name'] for col in metadata["schema"].get("columns", [])]
+            
+            table_descriptions.append(f"{i+1}. {table_name}: {purpose} (Key columns: {', '.join(columns[:8])})")
+        
+        selection_prompt = f"""You are a database expert. Select the most relevant tables for this query.
+
+User Query: "{user_query}"
+
+User Intent Analysis: {json.dumps(intent_analysis, indent=2)}
+
+Available Tables:
+{chr(10).join(table_descriptions)}
+
+Instructions:
+1. Analyze which tables are most relevant to answer the user's query
+2. Consider the user's intent and requirements
+3. Select 3-5 most relevant tables
+4. Prioritize tables that contain the main entities and required data
+
+Respond with a JSON array of the most relevant table numbers (1-{len(search_results)}):
+Example: [1, 3, 5]
+
+Selected table numbers:"""
+
+        try:
+            if hasattr(self.llm, 'ainvoke'):
+                response = await self.llm.ainvoke(selection_prompt)
+            else:
+                response = self.llm.invoke(selection_prompt)
+            
+            if hasattr(response, 'content'):
+                selection_text = response.content
+            else:
+                selection_text = str(response)
+            
+            try:
+                selection_text = selection_text.strip()
+                if selection_text.startswith('```json'):
+                    selection_text = selection_text[7:]
+                if selection_text.startswith('```'):
+                    selection_text = selection_text[3:]
+                if selection_text.endswith('```'):
+                    selection_text = selection_text[:-3]
+                
+                selected_indices = json.loads(selection_text.strip())
+                
+                if isinstance(selected_indices, list):
+                    selected_tables = []
+                    for idx in selected_indices:
+                        if isinstance(idx, int) and 1 <= idx <= len(search_results):
+                            selected_tables.append(search_results[idx - 1])
+                    return selected_tables[:5]
+                
+            except (json.JSONDecodeError, ValueError):
+                logger.warning("Failed to parse table selection")
+        
+        except Exception as e:
+            logger.warning(f"Table selection failed: {e}")
+        
+        return search_results[:5]
+
+    def _build_comprehensive_schema_context(self, selected_tables: List[Tuple]) -> str:
+        """Build detailed schema context for selected tables"""
+        
+        context_parts = ["COMPREHENSIVE DATABASE SCHEMA INFORMATION:"]
+        context_parts.append("=" * 60)
+        
+        for table_name, schema_text, metadata in selected_tables:
+            context_parts.append(f"\nTABLE: {table_name}")
+            context_parts.append("-" * 40)
             
             if metadata and metadata.get("schema"):
                 schema = metadata["schema"]
                 
-                context_parts.append(f"PURPOSE: {metadata.get('llm_analysis', {}).get('purpose', 'General data storage')}")
+                purpose = metadata.get('llm_analysis', {}).get('purpose', 'Data storage table')
+                context_parts.append(f"Business Purpose: {purpose}")
                 
-                # Build exact column list with emphasis
-                context_parts.append("EXACT COLUMNS (USE THESE NAMES ONLY):")
-                available_columns = []
-                date_columns = []
-                id_columns = []
-                name_columns = []
-                
+                context_parts.append("Column Definitions:")
                 for col in schema.get("columns", []):
                     col_name = col['name']
-                    col_type = col['type'].upper()
-                    
-                    col_info = f"  - {col_name} ({col['type']}"
-                    if not col.get("nullable", True):
-                        col_info += ", NOT NULL"
+                    col_type = col['type']
+                    nullable = "NULL" if col.get("nullable", True) else "NOT NULL"
+                    extra_info = ""
                     if col.get("autoincrement"):
-                        col_info += ", AUTO_INCREMENT"
-                    col_info += ")"
-                    context_parts.append(col_info)
-                    available_columns.append(col_name)
-                    
-                    # Categorize columns for easier reference
-                    if ('DATE' in col_type or 'TIME' in col_type or 
-                        col_name.lower().endswith('_at') or 
-                        col_name.lower().endswith('_date') or 
-                        'date' in col_name.lower()):
-                        date_columns.append(col_name)
-                    
-                    if (col_name.lower().endswith('_id') or 
-                        col_name.lower().endswith('id') or
-                        'id' in col_name.lower()):
-                        id_columns.append(col_name)
-                    
-                    if (col_name.lower().endswith('_name') or 
-                        col_name.lower().endswith('name') or
-                        'name' in col_name.lower()):
-                        name_columns.append(col_name)
-                
-                # Add categorized column lists for easy reference
-                context_parts.append(f"ALL COLUMN NAMES: {', '.join(available_columns)}")
-                
-                if date_columns:
-                    context_parts.append(f"DATE COLUMNS (use for time queries): {', '.join(date_columns)}")
-                if id_columns:
-                    context_parts.append(f"ID COLUMNS (use for joins): {', '.join(id_columns)}")
-                if name_columns:
-                    context_parts.append(f"NAME COLUMNS (use for display): {', '.join(name_columns)}")
+                        extra_info += " AUTO_INCREMENT"
+                    context_parts.append(f"  - {col_name}: {col_type} ({nullable}){extra_info}")
                 
                 if schema.get("primary_keys"):
-                    context_parts.append(f"PRIMARY KEY: {', '.join(schema['primary_keys'])}")
+                    context_parts.append(f"Primary Key: {', '.join(schema['primary_keys'])}")
                 
                 if schema.get("foreign_keys"):
-                    context_parts.append("FOREIGN KEYS:")
+                    context_parts.append("Foreign Key Relationships:")
                     for fk in schema["foreign_keys"]:
                         if isinstance(fk, dict):
-                            context_parts.append(f"  - {fk.get('column')} -> {fk.get('referenced_table')}.{fk.get('referenced_column')}")
-                        else:
-                            context_parts.append(f"  - {str(fk)}")
+                            context_parts.append(f"  - {fk.get('column')} references {fk.get('referenced_table')}.{fk.get('referenced_column')}")
                 
                 if schema.get("sample_data") and len(schema["sample_data"]) > 0:
-                    context_parts.append("SAMPLE DATA (shows actual column names and values):")
+                    context_parts.append("Sample Data (showing data patterns):")
                     sample = schema["sample_data"][0]
-                    for key, value in list(sample.items())[:5]:  # Show first 5 columns
+                    for key, value in list(sample.items())[:5]:
                         if value is not None:
-                            context_parts.append(f"  {key}: {value}")
+                            context_parts.append(f"  - {key}: {repr(value)}")
                 
                 analysis = metadata.get("llm_analysis", {})
                 if analysis.get("data_patterns"):
-                    context_parts.append(f"DATA PATTERNS: {'; '.join(analysis['data_patterns'][:2])}")
+                    context_parts.append("Data Patterns:")
+                    for pattern in analysis["data_patterns"][:3]:
+                        context_parts.append(f"  - {pattern}")
                 
                 if analysis.get("relationships"):
-                    rel_info = []
+                    context_parts.append("Business Relationships:")
                     for rel in analysis["relationships"][:2]:
                         if isinstance(rel, dict):
-                            rel_info.append(f"{rel.get('table')} via {rel.get('relationship_type')}")
+                            context_parts.append(f"  - Related to {rel.get('table')} via {rel.get('relationship_type')}")
                         else:
-                            rel_info.append(str(rel))
-                    if rel_info:
-                        context_parts.append(f"RELATIONSHIPS: {'; '.join(rel_info)}")
-            
-            context_parts.append("")
+                            context_parts.append(f"  - {str(rel)}")
         
         return "\n".join(context_parts)
 
-    def _create_enhanced_sql_prompt(self, table_context: str, user_query: str) -> str:
-        """Create enhanced prompt using vector database metadata"""
+    async def _generate_optimized_sql(self, user_query: str, intent_analysis: Dict, schema_context: str, date_context: str) -> str:
+        """Use LLM to generate optimized SQL with comprehensive context"""
         
-        date_context = self._get_current_date_context()
-        now = datetime.now()
-        today = date.today()
-        
-        return f"""You are an expert SQL query generator for Microsoft SQL Server. 
+        sql_generation_prompt = f"""You are an expert Microsoft SQL Server T-SQL developer. Generate the perfect SQL query based on the comprehensive analysis below.
 
-ABSOLUTE REQUIREMENTS:
-1. Return ONLY the SQL query - NO thinking, explanations, comments, or extra text
-2. Do NOT use <think> tags or any explanatory text
-3. Start your response directly with SELECT (or other SQL command)
-4. Use ONLY the EXACT column names listed in the metadata below
-5. DO NOT use placeholder names like 'date_column', 'id_column', etc.
-6. DO NOT guess or assume column names - only use what's explicitly shown
-7. Query must be 100% syntactically correct and executable
+USER REQUEST: "{user_query}"
 
-CRITICAL COLUMN USAGE:
-- NEVER use generic names like 'date_column', 'id', 'name', etc.
-- Use the EXACT column names from the "COLUMN NAMES:" sections
-- For dates: Look for columns ending in '_at', '_date', or containing 'date'
-- For IDs: Use the exact ID column names shown (like 'salary_id', 'qproj_id', etc.)
-- For names: Use exact name columns shown (like 'employee_name', 'projectName', etc.)
-
-T-SQL DATE FUNCTIONS (use with ACTUAL column names):
-- Current month: WHERE MONTH(actual_date_column) = {now.month} AND YEAR(actual_date_column) = {now.year}
-- Today: WHERE CAST(actual_date_column AS DATE) = '{today.strftime('%Y-%m-%d')}'
-- This year: WHERE YEAR(actual_date_column) = {now.year}
-- Date range: WHERE actual_date_column >= '2024-02-01' AND actual_date_column < '2025-03-01'
+USER INTENT ANALYSIS:
+{json.dumps(intent_analysis, indent=2)}
 
 {date_context}
 
-AVAILABLE TABLES WITH EXACT COLUMN NAMES:
-{table_context}
+{schema_context}
 
-USER QUERY: {user_query}
+CRITICAL SQL GENERATION REQUIREMENTS:
+1. Use ONLY the exact table names and column names from the schema above
+2. Generate syntactically perfect Microsoft SQL Server T-SQL
+3. Use appropriate JOINs when data spans multiple tables
+4. Include proper WHERE clauses for filtering and date conditions
+5. Add aggregation functions (COUNT, SUM, AVG, MAX, MIN) if needed
+6. Include GROUP BY clauses when using aggregations
+7. Add ORDER BY clauses for sorting when appropriate
+8. Use TOP clause to limit results (default TOP 100 unless specified)
+9. Handle date/time filtering using proper SQL Server date functions
+10. Use full table names in format: TableName.ColumnName
+11. Do NOT use table aliases or AS clauses for tables
+12. Generate clean, executable, production-ready SQL
 
-CRITICAL: Replace 'actual_date_column' with the real date column name from the tables above. Use ONLY the exact column names shown:"""
+IMPORTANT NOTES:
+- For date filtering, use appropriate functions like CAST, CONVERT, GETDATE(), DATEADD(), DATEDIFF()
+- For "today" queries, use: WHERE CAST(DateColumn AS DATE) = CAST(GETDATE() AS DATE)
+- For "this month" queries, use: WHERE MONTH(DateColumn) = MONTH(GETDATE()) AND YEAR(DateColumn) = YEAR(GETDATE())
+- For aggregations, always include GROUP BY for non-aggregated columns
+- Join tables using their foreign key relationships shown in the schema
 
-    def _validate_sql_columns(self, sql_query: str, search_results: List) -> tuple[bool, str]:
-        """Validate that the SQL query only uses existing column names"""
-        
-        # Extract all available columns from metadata
-        table_columns = {}
-        all_columns = set()
-        
-        for table_name, schema_text, metadata in search_results:
-            if metadata and metadata.get("schema"):
-                schema = metadata["schema"]
-                columns = [col['name'] for col in schema.get("columns", [])]
-                table_columns[table_name.lower()] = columns
-                all_columns.update([col.lower() for col in columns])
-        
-        # More comprehensive validation using regex
-        import re
-        
-        validation_issues = []
-        sql_lower = sql_query.lower()
-        
-        # Pattern 1: table.column references
-        table_col_pattern = r'(\w+)\.(\w+)'
-        matches = re.findall(table_col_pattern, sql_lower)
-        
-        for table_ref, column_ref in matches:
-            # Find matching table (could be alias or actual table name)
-            matching_table = None
-            for table_name in table_columns.keys():
-                if (table_ref == table_name.lower() or 
-                    table_ref in table_name.lower() or 
-                    table_name.lower().startswith(table_ref) or
-                    # Check for common alias patterns
-                    (len(table_ref) <= 3 and table_name.lower().startswith(table_ref))):
-                    matching_table = table_name
-                    break
-            
-            if matching_table:
-                # Check if column exists in that table
-                available_cols = [col.lower() for col in table_columns[matching_table]]
-                if column_ref not in available_cols:
-                    validation_issues.append(f"Column '{column_ref}' not found in table '{matching_table}'. Available: {', '.join(table_columns[matching_table])}")
-        
-        # Pattern 2: Standalone column references (more comprehensive)
-        # Look for words that appear after SELECT, WHERE, JOIN ON, ORDER BY, GROUP BY
-        sql_parts = re.split(r'\b(SELECT|FROM|WHERE|JOIN|ON|ORDER BY|GROUP BY|HAVING)\b', sql_query, flags=re.IGNORECASE)
-        
-        for i, part in enumerate(sql_parts):
-            if i > 0 and sql_parts[i-1].upper() in ['SELECT', 'WHERE', 'ON', 'ORDER BY', 'GROUP BY']:
-                # Extract potential column names from this part
-                # Remove common SQL keywords and operators
-                cleaned_part = re.sub(r'\b(AND|OR|NOT|IN|IS|NULL|LIKE|BETWEEN|AS|ASC|DESC|DISTINCT|TOP|COUNT|SUM|AVG|MAX|MIN)\b', '', part, flags=re.IGNORECASE)
-                
-                # Find word patterns that could be column names
-                potential_columns = re.findall(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b', cleaned_part)
-                
-                for col in potential_columns:
-                    col_lower = col.lower()
-                    # Skip common SQL keywords and table names
-                    if (col_lower not in ['select', 'from', 'where', 'join', 'on', 'order', 'by', 'group', 'having', 'and', 'or', 'not', 'in', 'is', 'null', 'like', 'between', 'as', 'asc', 'desc', 'distinct', 'top', 'count', 'sum', 'avg', 'max', 'min'] and
-                        col_lower not in [t.lower() for t in table_columns.keys()] and
-                        len(col) > 2):  # Ignore very short words
-                        
-                        # Check if this column exists in any table
-                        if col_lower not in all_columns:
-                            # Check for common incorrect patterns
-                            common_mistakes = {
-                                'fk_proj_id': 'Check available foreign key columns',
-                                'project_id': 'Check available project reference columns', 
-                                'fk_project_id': 'Check available project foreign key columns',
-                                'user_id': 'Check available user reference columns',
-                                'fk_user_id': 'Check available user foreign key columns'
-                            }
-                            
-                            if col_lower in common_mistakes:
-                                validation_issues.append(f"Column '{col}' not found. {common_mistakes[col_lower]}")
-                            else:
-                                # Only flag if it really looks like a column name
-                                if '_' in col or col.endswith('id') or col.endswith('name') or col.endswith('date'):
-                                    validation_issues.append(f"Column '{col}' not found in any available table")
-        
-        if validation_issues:
-            return False, "; ".join(validation_issues[:3])  # Limit to first 3 issues
-        
-        return True, "Valid"
+Generate the SQL query that perfectly fulfills the user's request:"""
 
-    async def process_query(self, command: str, include_sql: bool = True) -> QueryResponse:
-        start_time = time.time()
+        if hasattr(self.llm, 'ainvoke'):
+            response = await self.llm.ainvoke(sql_generation_prompt)
+        else:
+            response = self.llm.invoke(sql_generation_prompt)
         
-        logger.info(f"Processing query with vector database: {command[:50]}...")
+        if hasattr(response, 'content'):
+            return response.content
+        return str(response)
+
+    async def _validate_sql_with_llm(self, sql_query: str, schema_context: str, available_tables: List[str]) -> Tuple[bool, str]:
+        """Use LLM to validate the generated SQL"""
         
+        table_names = [table[0] for table in available_tables] if isinstance(available_tables[0], tuple) else available_tables
+        
+        validation_prompt = f"""You are a SQL validation expert. Validate this SQL query against the provided schema.
+
+SQL QUERY TO VALIDATE:
+{sql_query}
+
+{schema_context}
+
+AVAILABLE TABLE NAMES: {', '.join(table_names)}
+
+VALIDATION REQUIREMENTS:
+1. Check if all table names in the SQL exist in the available tables
+2. Check if all column names exist in their respective tables
+3. Verify JOIN conditions use valid foreign key relationships
+4. Ensure syntax is correct for Microsoft SQL Server
+5. Check for any syntax errors or invalid constructs
+
+Respond with a JSON object:
+{{
+    "is_valid": true/false,
+    "errors": ["error1", "error2"],
+    "suggestions": ["suggestion1", "suggestion2"]
+}}
+
+Validation result:"""
+
         try:
-            if not self.enhanced_schema_store or not self.enhanced_schema_store.is_metadata_loaded:
-                logger.warning("Vector database not available, falling back to basic schema")
-                return await self._process_query_fallback(command, include_sql)
-            
-            logger.info("Searching vector database for relevant tables...")
-            search_results = self.enhanced_schema_store.search(command, k=8)
-            
-            if not search_results:
-                logger.warning("No relevant tables found in vector database")
-                return QueryResponse(
-                    success=False,
-                    command=command,
-                    error="No relevant tables found for this query",
-                    execution_time=round(time.time() - start_time, 3)
-                )
-            
-            logger.info(f"Found {len(search_results)} relevant tables: {[r[0] for r in search_results]}")
-            
-            table_context = self._build_table_context_from_metadata(search_results)
-            
-            # Log the table context for debugging
-            logger.info("=== AVAILABLE TABLES AND COLUMNS ===")
-            for table_name, schema_text, metadata in search_results:
-                if metadata and metadata.get("schema"):
-                    schema = metadata["schema"]
-                    columns = [col['name'] for col in schema.get("columns", [])]
-                    logger.info(f"Table '{table_name}': {', '.join(columns)}")
-            logger.info("=== END TABLE INFO ===")
-            
-            logger.debug(f"Table context built: {table_context[:500]}...")
-            
-            prompt_text = self._create_enhanced_sql_prompt(table_context, command)
-            
             if hasattr(self.llm, 'ainvoke'):
-                sql_response = await self.llm.ainvoke(prompt_text)
+                response = await self.llm.ainvoke(validation_prompt)
             else:
-                sql_response = self.llm.invoke(prompt_text)
+                response = self.llm.invoke(validation_prompt)
             
-            if hasattr(sql_response, 'content'):
-                sql_query = sql_response.content
-            elif isinstance(sql_response, dict) and 'content' in sql_response:
-                sql_query = sql_response['content']
+            if hasattr(response, 'content'):
+                validation_text = response.content
             else:
-                sql_query = str(sql_response)
+                validation_text = str(response)
             
-            sql_query = self._clean_sql_output(sql_query)
-            
-            if not sql_query.strip():
-                raise Exception("Generated SQL query is empty")
-            
-            # Validate the SQL query against metadata
-            is_valid, validation_message = self._validate_sql_columns(sql_query, search_results)
-            
-            if not is_valid:
-                logger.warning(f"SQL validation failed: {validation_message}")
-                # Log the invalid query for debugging
-                logger.warning(f"Invalid SQL generated: {sql_query}")
+            try:
+                validation_text = validation_text.strip()
+                if validation_text.startswith('```json'):
+                    validation_text = validation_text[7:]
+                if validation_text.startswith('```'):
+                    validation_text = validation_text[3:]
+                if validation_text.endswith('```'):
+                    validation_text = validation_text[:-3]
                 
-                # Try to provide helpful error message
-                error_msg = f"Generated SQL contains invalid column names: {validation_message}"
-                return QueryResponse(
-                    success=False,
-                    command=command,
-                    error=error_msg,
-                    sql_query=sql_query if include_sql else None,
-                    execution_time=round(time.time() - start_time, 3)
-                )
-            
-            execution_time = time.time() - start_time
-            
-            logger.info(f"SQL query generated and validated successfully in {execution_time:.3f} seconds")
-            logger.info(f"Generated SQL: {sql_query[:200]}...")
-            
-            return QueryResponse(
-                success=True,
-                command=command,
-                sql_query=sql_query if include_sql else None,
-                result=sql_query,
-                execution_time=round(execution_time, 3)
-            )
-        
+                validation_result = json.loads(validation_text.strip())
+                
+                is_valid = validation_result.get("is_valid", False)
+                errors = validation_result.get("errors", [])
+                error_message = "; ".join(errors) if errors else ""
+                
+                return is_valid, error_message
+                
+            except json.JSONDecodeError:
+                logger.warning("Failed to parse validation result")
+                return False, "Validation parsing failed"
+                
         except Exception as e:
-            execution_time = time.time() - start_time
-            error_msg = str(e)
-            
-            logger.error(f"SQL generation failed: {error_msg}")
-            
-            return QueryResponse(
-                success=False,
-                command=command,
-                error=error_msg,
-                execution_time=round(execution_time, 3)
-            )
+            logger.warning(f"LLM validation failed: {e}")
+            return False, f"Validation error: {str(e)}"
 
-    async def _process_query_fallback(self, command: str, include_sql: bool = True) -> QueryResponse:
-        """Fallback method when vector database is not available"""
-        try:
-            table_names = self.sql_db.get_usable_table_names()[:10]
-            basic_context = f"Available tables: {', '.join(table_names)}"
-            
-            prompt_text = self._create_enhanced_sql_prompt(basic_context, command)
-            
-            if hasattr(self.llm, 'ainvoke'):
-                sql_response = await self.llm.ainvoke(prompt_text)
-            else:
-                sql_response = self.llm.invoke(prompt_text)
-            
-            if hasattr(sql_response, 'content'):
-                sql_query = sql_response.content
-            else:
-                sql_query = str(sql_response)
-            
-            sql_query = self._clean_sql_output(sql_query)
-            
-            return QueryResponse(
-                success=True,
-                command=command,
-                sql_query=sql_query if include_sql else None,
-                result=sql_query,
-                execution_time=round(time.time() - time.time(), 3)
-            )
+    async def _fix_sql_with_llm(self, user_query: str, sql_query: str, validation_errors: str, schema_context: str, intent_analysis: Dict) -> str:
+        """Use LLM to fix SQL based on validation errors"""
         
-        except Exception as e:
-            return QueryResponse(
-                success=False,
-                command=command,
-                error=f"Fallback query generation failed: {str(e)}",
-                execution_time=0
-            )
+        fix_prompt = f"""You are a SQL repair expert. Fix the SQL query based on the validation errors.
+
+ORIGINAL USER REQUEST: "{user_query}"
+
+USER INTENT: {json.dumps(intent_analysis, indent=2)}
+
+BROKEN SQL QUERY:
+{sql_query}
+
+VALIDATION ERRORS:
+{validation_errors}
+
+{schema_context}
+
+INSTRUCTIONS:
+1. Fix all the validation errors mentioned above
+2. Use ONLY the exact table and column names from the schema
+3. Maintain the original intent and logic of the query
+4. Generate syntactically correct Microsoft SQL Server T-SQL
+5. Do NOT use table aliases
+6. Use full table names in format: TableName.ColumnName
+
+Generate the corrected SQL query:"""
+
+        if hasattr(self.llm, 'ainvoke'):
+            response = await self.llm.ainvoke(fix_prompt)
+        else:
+            response = self.llm.invoke(fix_prompt)
+        
+        if hasattr(response, 'content'):
+            return response.content
+        return str(response)
 
     def _clean_sql_output(self, sql_output: str) -> str:
-        """Clean the SQL output to ensure it contains only the SQL query"""
+        """Clean SQL output from LLM"""
+        if not sql_output:
+            return ""
         
         sql_output = sql_output.strip()
         
-        # Remove thinking tags and content
-        if "<think>" in sql_output.lower():
-            # Find the end of thinking section
-            think_end = sql_output.lower().find("</think>")
-            if think_end != -1:
-                sql_output = sql_output[think_end + 8:].strip()
-            else:
-                # If no closing tag, remove from <think> onwards until we find SQL
-                think_start = sql_output.lower().find("<think>")
-                if think_start != -1:
-                    before_think = sql_output[:think_start].strip()
-                    after_think = sql_output[think_start:].strip()
-                    
-                    # Look for SELECT after <think>
-                    select_pos = after_think.upper().find("SELECT")
-                    if select_pos != -1:
-                        sql_output = after_think[select_pos:].strip()
-                    else:
-                        sql_output = before_think
-        
-        # Remove markdown code blocks
         if sql_output.startswith("```sql"):
             sql_output = sql_output[6:]
         if sql_output.startswith("```"):
@@ -459,154 +450,171 @@ CRITICAL: Replace 'actual_date_column' with the real date column name from the t
         if sql_output.endswith("```"):
             sql_output = sql_output[:-3]
         
-        # Remove any trailing markdown or artifacts
-        lines = sql_output.split('\n')
-        cleaned_lines = []
-        
-        for line in lines:
-            line = line.strip()
-            if line.startswith('```') or line.endswith('```'):
-                continue
-            if line:
-                cleaned_lines.append(line)
-        
-        sql_output = '\n'.join(cleaned_lines)
-        
-        # Remove common prefixes
-        prefixes_to_remove = [
-            "Here's the SQL query:",
-            "Here is the SQL query:",
-            "The SQL query is:",
-            "SQL Query:",
-            "Query:",
-            "SQL:",
-            "T-SQL:",
-            "Generate the SQL query using the exact table and column names from the metadata above:",
-        ]
-        
-        for prefix in prefixes_to_remove:
-            if sql_output.lower().startswith(prefix.lower()):
-                sql_output = sql_output[len(prefix):].strip()
-        
-        # Process line by line to extract only SQL
         lines = sql_output.split('\n')
         sql_lines = []
         found_sql_start = False
         
         for line in lines:
             line = line.strip()
-            if not line:
+            if not line or line.startswith('--'):
                 continue
             
-            # Skip comment lines
-            if line.startswith('--'):
-                continue
-            
-            # Skip thinking or explanation content
-            if ("<think>" in line.lower() or "</think>" in line.lower() or
-                line.lower().startswith("okay,") or
-                line.lower().startswith("first,") or
-                line.lower().startswith("let me") or
-                line.lower().startswith("i need to")):
-                continue
-                
-            # Stop at explanation indicators
-            explanation_indicators = [
-                "this query",
-                "the above",
-                "explanation:",
-                "note:",
-                "this will",
-                "this returns",
-                "the result",
-                "this sql",
-                "let me break",
-                "here's what"
-            ]
-            
-            if any(indicator in line.lower() for indicator in explanation_indicators):
-                break
-            
-            # Check if this looks like SQL
-            if (line.upper().startswith(('SELECT', 'WITH', 'INSERT', 'UPDATE', 'DELETE'))):
+            if line.upper().startswith(('SELECT', 'WITH', 'INSERT', 'UPDATE', 'DELETE')):
                 found_sql_start = True
                 sql_lines.append(line)
-            elif found_sql_start and (
-                line.upper().startswith(('FROM', 'WHERE', 'JOIN', 'INNER JOIN', 'LEFT JOIN', 'RIGHT JOIN', 
-                                        'ORDER BY', 'GROUP BY', 'HAVING', 'UNION', 'EXCEPT', 'INTERSECT')) or
-                line.strip().endswith((';', ',', ')', '(')) or
-                'FROM' in line.upper() or 'WHERE' in line.upper() or
-                any(keyword in line.upper() for keyword in ['AND', 'OR', 'ON', 'AS', 'TOP', 'DISTINCT', 'COUNT', 'SUM', 'AVG', 'MAX', 'MIN'])):
-                sql_lines.append(line)
-            elif found_sql_start and sql_lines:
-                # Continue adding lines if we're in the middle of a SQL query
+            elif found_sql_start:
+                if any(indicator in line.lower() for indicator in ["generate the", "instructions:", "fix", "validation"]):
+                    break
                 sql_lines.append(line)
         
-        # If we found SQL lines, use them
         if sql_lines:
             sql_output = '\n'.join(sql_lines)
         else:
-            # Last resort: try to find SELECT statement
-            select_pos = sql_output.upper().find("SELECT")
-            if select_pos != -1:
-                sql_output = sql_output[select_pos:]
-                # Cut off at first explanation
-                for indicator in ["this query", "explanation:", "note:", "here's what"]:
-                    pos = sql_output.lower().find(indicator)
-                    if pos != -1:
-                        sql_output = sql_output[:pos].strip()
-                        break
+            import re
+            select_match = re.search(r'(SELECT.*?)(?:\n\n|\Z)', sql_output, re.DOTALL | re.IGNORECASE)
+            if select_match:
+                sql_output = select_match.group(1)
         
-        sql_output = sql_output.strip()
+        sql_output = sql_output.replace('\\n', ' ').replace('\\t', ' ').replace('\\r', '')
+        sql_output = ' '.join(sql_output.split())
         
-        # Remove trailing semicolon
         if sql_output.endswith(';'):
             sql_output = sql_output[:-1].strip()
         
-        return sql_output
-    
-    async def execute_direct_sql(self, sql_query: str) -> QueryResponse:
+        return sql_output.strip()
+
+    async def process_query(self, command: str, include_sql: bool = True) -> QueryResponse:
+        """Main processing method - 100% LLM-driven"""
         start_time = time.time()
         
-        logger.info(f"Executing direct SQL: {sql_query[:50]}...")
+        logger.info(f"Processing query with intelligent LLM analysis: {command[:100]}...")
         
         try:
-            result = self.sql_db.run(sql_query)
-            execution_time = time.time() - start_time
+            if not self.enhanced_schema_store or not self.enhanced_schema_store.is_metadata_loaded:
+                return QueryResponse(
+                    success=False,
+                    command=command,
+                    error="Knowledge base not loaded. Please upload metadata file first.",
+                    execution_time=round(time.time() - start_time, 3)
+                )
             
-            logger.info(f"Direct SQL executed successfully in {execution_time:.3f} seconds")
+            logger.info("Step 1: Analyzing user intent with LLM...")
+            intent_analysis = await self._analyze_user_intent(command)
+            logger.info(f"Intent analysis: {intent_analysis.get('business_context', 'N/A')}")
+            
+            logger.info("Step 2: Searching knowledge base for relevant tables...")
+            search_results = self.enhanced_schema_store.search(command, k=12)
+            if not search_results:
+                return QueryResponse(
+                    success=False,
+                    command=command,
+                    error="No relevant tables found in knowledge base",
+                    execution_time=round(time.time() - start_time, 3)
+                )
+            
+            logger.info("Step 3: LLM selecting most relevant tables...")
+            selected_tables = await self._select_relevant_tables(command, search_results, intent_analysis)
+            table_names = [t[0] for t in selected_tables]
+            logger.info(f"Selected tables: {table_names}")
+            
+            logger.info("Step 4: Building comprehensive schema context...")
+            schema_context = self._build_comprehensive_schema_context(selected_tables)
+            date_context = self._get_current_date_context()
+            
+            max_attempts = 3
+            sql_query = None
+            
+            for attempt in range(max_attempts):
+                logger.info(f"Step 5.{attempt + 1}: Generating SQL with LLM (attempt {attempt + 1})...")
+                
+                if attempt == 0:
+                    sql_query = await self._generate_optimized_sql(command, intent_analysis, schema_context, date_context)
+                else:
+                    sql_query = await self._fix_sql_with_llm(command, sql_query, last_error, schema_context, intent_analysis)
+                
+                sql_query = self._clean_sql_output(sql_query)
+                
+                if not sql_query.strip():
+                    if attempt == max_attempts - 1:
+                        return QueryResponse(
+                            success=False,
+                            command=command,
+                            error="LLM failed to generate valid SQL query",
+                            execution_time=round(time.time() - start_time, 3)
+                        )
+                    continue
+                
+                logger.info("Step 6: Validating SQL with LLM...")
+                is_valid, validation_error = await self._validate_sql_with_llm(sql_query, schema_context, table_names)
+                
+                if is_valid:
+                    logger.info("SQL validation successful!")
+                    break
+                else:
+                    last_error = validation_error
+                    logger.warning(f"Validation failed: {validation_error}")
+                    
+                    if attempt == max_attempts - 1:
+                        return QueryResponse(
+                            success=False,
+                            command=command,
+                            error=f"Failed to generate valid SQL after {max_attempts} attempts. Last error: {validation_error}",
+                            sql_query=sql_query,
+                            execution_time=round(time.time() - start_time, 3)
+                        )
+            
+            execution_time = time.time() - start_time
+            logger.info(f"Intelligent SQL generation completed successfully in {execution_time:.3f} seconds")
             
             return QueryResponse(
                 success=True,
+                command=command,
                 sql_query=sql_query,
-                result=result,
                 execution_time=round(execution_time, 3)
             )
         
         except Exception as e:
             execution_time = time.time() - start_time
-            error_msg = str(e)
+            logger.error(f"Intelligent SQL generation failed: {str(e)}")
             
-            logger.error(f"Direct SQL execution failed: {error_msg}")
+            return QueryResponse(
+                success=False,
+                command=command,
+                error=str(e),
+                execution_time=round(execution_time, 3)
+            )
+
+    async def execute_direct_sql(self, sql_query: str) -> QueryResponse:
+        start_time = time.time()
+        
+        try:
+            result = self.sql_db.run(sql_query)
+            execution_time = time.time() - start_time
+            
+            return QueryResponse(
+                success=True,
+                sql_query=sql_query,
+                execution_time=round(execution_time, 3)
+            )
+        
+        except Exception as e:
+            execution_time = time.time() - start_time
             
             return QueryResponse(
                 success=False,
                 sql_query=sql_query,
-                error=error_msg,
+                error=str(e),
                 execution_time=round(execution_time, 3)
             )
     
     def get_quick_health_status(self) -> dict:
         try:
             is_connected = self.database_service.test_connection()
-            
             return {
                 "status": "healthy" if is_connected else "unhealthy",
                 "database_connected": is_connected
             }
-        
         except Exception as e:
-            logger.error(f"Quick health check failed: {str(e)}")
             return {
                 "status": "unhealthy",
                 "database_connected": False,
@@ -615,8 +623,6 @@ CRITICAL: Replace 'actual_date_column' with the real date column name from the t
     
     def get_database_info(self) -> TableInfo:
         try:
-            logger.debug("Retrieving database information")
-            
             table_names = self.sql_db.get_usable_table_names()
             schema_info = self.sql_db.get_table_info()
             
@@ -624,15 +630,11 @@ CRITICAL: Replace 'actual_date_column' with the real date column name from the t
                 table_names=table_names,
                 schema_info=schema_info
             )
-         
         except Exception as e:
-            logger.error(f"Failed to get database info: {str(e)}")
             raise QueryExecutionError(f"Failed to retrieve database information: {str(e)}")
     
     def get_table_description(self, table_name: str) -> dict:
         try:
-            logger.debug(f"Getting description for table: {table_name}")
-            
             result = self.sql_db.get_table_info([table_name])
             
             return {
@@ -640,9 +642,7 @@ CRITICAL: Replace 'actual_date_column' with the real date column name from the t
                 "schema": result,
                 "success": True
             }
-        
         except Exception as e:
-            logger.error(f"Failed to describe table {table_name}: {str(e)}")
             return {
                 "table_name": table_name,
                 "error": str(e),
@@ -670,7 +670,6 @@ CRITICAL: Replace 'actual_date_column' with the real date column name from the t
                     table_names = self.sql_db.get_usable_table_names()
                     result["tables_count"] = len(table_names)
                 except Exception as e:
-                    logger.warning(f"Could not get table count: {str(e)}")
                     result["tables_count"] = None
             
             if self.enhanced_schema_store:
@@ -682,9 +681,7 @@ CRITICAL: Replace 'actual_date_column' with the real date column name from the t
                 }
             
             return result
-        
         except Exception as e:
-            logger.error(f"Health check failed: {str(e)}")
             return {
                 "status": "unhealthy",
                 "database_connected": False,
@@ -692,120 +689,4 @@ CRITICAL: Replace 'actual_date_column' with the real date column name from the t
             }
     
     def get_enhanced_schema_store(self):
-        """Get the enhanced schema store instance"""
         return self.enhanced_schema_store
-    
-    def rebuild_knowledge_base(self):
-        """Rebuild the knowledge base vector index"""
-        if self.enhanced_schema_store:
-            try:
-                self.enhanced_schema_store.rebuild_index()
-                logger.info("Knowledge base rebuilt successfully")
-                return {"success": True, "message": "Knowledge base rebuilt successfully"}
-            except Exception as e:
-                logger.error(f"Failed to rebuild knowledge base: {e}")
-                return {"success": False, "error": str(e)}
-        else:
-            return {"success": False, "error": "Enhanced schema store not available"}
-    
-    def clear_knowledge_base(self):
-        """Clear the knowledge base completely"""
-        if self.enhanced_schema_store:
-            try:
-                self.enhanced_schema_store.clear_all()
-                logger.info("Knowledge base cleared successfully")
-                return {"success": True, "message": "Knowledge base cleared successfully"}
-            except Exception as e:
-                logger.error(f"Failed to clear knowledge base: {e}")
-                return {"success": False, "error": str(e)}
-        else:
-            return {"success": False, "error": "Enhanced schema store not available"}
-    
-    def get_knowledge_base_stats(self) -> dict:
-        """Get detailed statistics about the knowledge base"""
-        if not self.enhanced_schema_store:
-            return {
-                "available": False,
-                "error": "Enhanced schema store not available"
-            }
-        
-        try:
-            status = self.enhanced_schema_store.get_status()
-            
-            stats = {
-                "available": True,
-                "metadata_loaded": status["metadata_loaded"],
-                "total_tables": status["total_tables"],
-                "index_built": status["index_built"],
-                "upload_time": status["upload_time"],
-                "storage_path": status["storage_path"],
-                "files_exist": status["files_exist"]
-            }
-            
-            if status["metadata_loaded"]:
-                stats["table_names"] = self.enhanced_schema_store.table_names[:10]
-                stats["sample_purposes"] = []
-                
-                for table_name in self.enhanced_schema_store.table_names[:5]:
-                    details = self.enhanced_schema_store.get_table_details(table_name)
-                    if details and details.get("llm_analysis", {}).get("purpose"):
-                        stats["sample_purposes"].append({
-                            "table": table_name,
-                            "purpose": details["llm_analysis"]["purpose"]
-                        })
-            
-            return stats
-            
-        except Exception as e:
-            logger.error(f"Failed to get knowledge base stats: {e}")
-            return {
-                "available": True,
-                "error": str(e)
-            }
-    
-    def search_knowledge_base(self, query: str, limit: int = 5) -> dict:
-        """Search the knowledge base for relevant tables"""
-        if not self.enhanced_schema_store:
-            return {
-                "success": False,
-                "error": "Enhanced schema store not available"
-            }
-        
-        if not self.enhanced_schema_store.is_metadata_loaded:
-            return {
-                "success": False,
-                "error": "No metadata loaded in knowledge base"
-            }
-        
-        try:
-            results = self.enhanced_schema_store.search(query, k=limit)
-            
-            formatted_results = []
-            for table_name, schema_text, metadata in results:
-                result_item = {
-                    "table_name": table_name,
-                    "schema_summary": schema_text[:300] + "..." if len(schema_text) > 300 else schema_text
-                }
-                
-                if metadata.get("llm_analysis"):
-                    analysis = metadata["llm_analysis"]
-                    result_item["purpose"] = analysis.get("purpose", "")
-                    result_item["data_patterns"] = analysis.get("data_patterns", [])
-                    result_item["relationships"] = analysis.get("relationships", [])
-                    result_item["observations"] = analysis.get("observations", [])
-                
-                formatted_results.append(result_item)
-            
-            return {
-                "success": True,
-                "query": query,
-                "results": formatted_results,
-                "total_found": len(formatted_results)
-            }
-            
-        except Exception as e:
-            logger.error(f"Failed to search knowledge base: {e}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
