@@ -9,10 +9,12 @@ class Settings(BaseSettings):
     API_HOST: str = "0.0.0.0"
     API_PORT: int = 8000
     
-    DATABASE_URL: str = (
-        "mssql+pyodbc://sa:Esap.12.Three@176.9.16.194,1433/"
-        "JustForRestore?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes&Encrypt=no&timeout=30"
-    )
+    DATABASE_URL: str = os.getenv("DATABASE_URL","")
+
+    # DATABASE_URL: str = (
+    #     "mssql+pyodbc://sa:Esap.12.Three@176.9.16.194,1433/"
+    #     "JustForRestore?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes&Encrypt=no&timeout=30"
+    # )
     
     DEFAULT_LLM_PROVIDER: str = "gemini"
     

@@ -18,45 +18,6 @@ async def upload_metadata_file(
     file: UploadFile = File(..., description="JSON file containing database metadata"),
     service: TextToSQLService = Depends(get_text_to_sql_service)
 ) -> MetadataUploadResponse:
-    """
-    Upload a JSON file containing comprehensive database metadata.
-    
-    The file should contain:
-    - metadata: Database information (type, timestamp, table count)
-    - tables: Array of table objects with schema and LLM analysis
-    
-    Example file structure:
-    ```json
-    {
-        "metadata": {
-            "database_type": "Microsoft SQL Server",
-            "analysis_timestamp": "2025-06-17T09:11:30.013073",
-            "total_tables": 200,
-            "processed_tables": 200
-        },
-        "tables": [
-            {
-                "schema": {
-                    "table_name": "users",
-                    "columns": [...],
-                    "primary_keys": [...],
-                    "foreign_keys": [...],
-                    "sample_data": [...]
-                },
-                "llm_analysis": {
-                    "purpose": "Stores user information",
-                    "data_patterns": [...],
-                    "relationships": [...],
-                    "observations": [...]
-                }
-            }
-        ]
-    }
-    ```
-    
-    The file will be processed in the background and indexed in the vector database
-    for fast retrieval and improved query accuracy.
-    """
     try:
         if not file.filename.endswith('.json'):
             raise HTTPException(
@@ -120,19 +81,71 @@ async def upload_metadata_file(
         )
 
 
+@router.post("/upload-business-logic", summary="Upload business logic text file")
+async def upload_business_logic_file(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(..., description="Text file containing business logic rules"),
+    service: TextToSQLService = Depends(get_text_to_sql_service)
+):
+    try:
+        if not file.filename.endswith('.txt'):
+            raise HTTPException(
+                status_code=400,
+                detail="Only TXT files are allowed"
+            )
+        
+        if not hasattr(service, 'enhanced_schema_store'):
+            raise HTTPException(
+                status_code=500,
+                detail="Enhanced schema store not available"
+            )
+        
+        contents = await file.read()
+        
+        try:
+            file_content = contents.decode('utf-8')
+        except UnicodeDecodeError:
+            raise HTTPException(
+                status_code=400,
+                detail="File encoding not supported. Please use UTF-8 encoded text file."
+            )
+        
+        if not file_content.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="File is empty. Please provide a file with business logic content."
+            )
+        
+        background_tasks.add_task(
+            process_business_logic_background,
+            service.enhanced_schema_store,
+            file_content,
+            file.filename
+        )
+        
+        logger.info(f"Started processing business logic file: {file.filename}")
+        
+        return {
+            "success": True,
+            "message": f"Business logic file '{file.filename}' upload started. Processing in background...",
+            "filename": file.filename,
+            "content_length": len(file_content)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to process uploaded business logic file: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to process uploaded file: {str(e)}"
+        )
+
+
 @router.get("/status", response_model=KnowledgeBaseStatus, summary="Get knowledge base status")
 async def get_knowledge_base_status(
     service: TextToSQLService = Depends(get_text_to_sql_service)
 ) -> KnowledgeBaseStatus:
-    """
-    Get the current status of the knowledge base.
-    
-    Returns information about:
-    - Whether metadata has been loaded from file
-    - Last upload timestamp
-    - Number of tables indexed in vector database
-    - Vector index build status
-    """
     try:
         if not hasattr(service, 'enhanced_schema_store'):
             return KnowledgeBaseStatus(
@@ -159,20 +172,41 @@ async def get_knowledge_base_status(
         )
 
 
+@router.get("/business-logic/status", summary="Get business logic status")
+async def get_business_logic_status(
+    service: TextToSQLService = Depends(get_text_to_sql_service)
+):
+    try:
+        if not hasattr(service, 'enhanced_schema_store'):
+            return {
+                "business_logic_loaded": False,
+                "upload_time": None,
+                "total_chunks": 0,
+                "combined_with_schema": False
+            }
+        
+        status = service.enhanced_schema_store.get_status()
+        
+        return {
+            "business_logic_loaded": status["business_logic_loaded"],
+            "upload_time": status["business_logic_upload_time"],
+            "total_chunks": status["total_business_logic_chunks"],
+            "combined_with_schema": status["metadata_loaded"] and status["business_logic_loaded"]
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get business logic status: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get business logic status: {str(e)}"
+        )
+
+
 @router.get("/tables/{table_name}", summary="Get detailed table information")
 async def get_table_details(
     table_name: str,
     service: TextToSQLService = Depends(get_text_to_sql_service)
 ):
-    """
-    Get detailed information for a specific table from the knowledge base.
-    
-    Returns:
-    - Complete schema information (columns, types, constraints)
-    - LLM analysis (purpose, patterns, relationships, observations)
-    - Sample data patterns
-    - Processing timestamp
-    """
     try:
         if not hasattr(service, 'enhanced_schema_store'):
             raise HTTPException(
@@ -216,15 +250,6 @@ async def search_tables(
     limit: int = 5,
     service: TextToSQLService = Depends(get_text_to_sql_service)
 ):
-    """
-    Search for relevant tables using vector similarity search.
-    
-    Uses semantic search across table schemas, purposes, data patterns,
-    and relationships to find the most relevant tables for your query.
-    
-    This provides much faster and more accurate results than traditional
-    schema exploration.
-    """
     try:
         if not hasattr(service, 'enhanced_schema_store'):
             raise HTTPException(
@@ -271,12 +296,6 @@ async def search_tables(
 async def clear_knowledge_base(
     service: TextToSQLService = Depends(get_text_to_sql_service)
 ):
-    """
-    Clear the entire knowledge base and vector index.
-    
-    This will remove all uploaded metadata and reset the system to use
-    basic database schema exploration instead of the enhanced metadata.
-    """
     try:
         if hasattr(service, 'enhanced_schema_store'):
             service.enhanced_schema_store.clear_all()
@@ -299,12 +318,6 @@ async def rebuild_vector_index(
     background_tasks: BackgroundTasks,
     service: TextToSQLService = Depends(get_text_to_sql_service)
 ):
-    """
-    Rebuild the vector index from existing metadata.
-    
-    Useful if the vector index becomes corrupted or if you want to
-    update the embedding model.
-    """
     try:
         if not hasattr(service, 'enhanced_schema_store'):
             raise HTTPException(
@@ -312,10 +325,10 @@ async def rebuild_vector_index(
                 detail="Enhanced schema store not available"
             )
         
-        if not service.enhanced_schema_store.is_metadata_loaded:
+        if not service.enhanced_schema_store.is_metadata_loaded and not service.enhanced_schema_store.is_business_logic_loaded:
             raise HTTPException(
                 status_code=404,
-                detail="No metadata loaded. Please upload metadata file first."
+                detail="No metadata or business logic loaded. Please upload files first."
             )
         
         background_tasks.add_task(
@@ -339,7 +352,6 @@ async def rebuild_vector_index(
 
 
 def process_metadata_file_background(enhanced_schema_store, metadata_json, filename):
-    """Background task to process uploaded metadata file"""
     try:
         logger.info(f"Starting background processing of file: {filename}")
         result = enhanced_schema_store.process_metadata(metadata_json)
@@ -353,8 +365,21 @@ def process_metadata_file_background(enhanced_schema_store, metadata_json, filen
         logger.error(f"Background file processing failed: {str(e)}")
 
 
+def process_business_logic_background(enhanced_schema_store, file_content, filename):
+    try:
+        logger.info(f"Starting background processing of business logic file: {filename}")
+        result = enhanced_schema_store.process_business_logic_file(file_content, filename)
+        
+        if result["success"]:
+            logger.info(f"Business logic processing completed: {result['message']}")
+        else:
+            logger.error(f"Business logic processing failed: {result['error']}")
+            
+    except Exception as e:
+        logger.error(f"Background business logic processing failed: {str(e)}")
+
+
 def rebuild_index_background(enhanced_schema_store):
-    """Background task to rebuild vector index"""
     try:
         logger.info("Starting vector index rebuild")
         enhanced_schema_store.rebuild_index()

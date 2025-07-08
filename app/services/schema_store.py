@@ -16,7 +16,6 @@ logger = logging.getLogger(__name__)
 
 
 class PersistentEnhancedSchemaVectorStore:
-    """Enhanced vector store with persistent storage for metadata and vector index."""
 
     def __init__(self, database_service: DatabaseService, model_name: str = "all-MiniLM-L6-v2", storage_path: str = "knowledge_base"):
         self.database_service = database_service
@@ -28,29 +27,37 @@ class PersistentEnhancedSchemaVectorStore:
         self.schema_texts: List[str] = []
         self.table_names: List[str] = []
         self.table_metadata: Dict[str, Dict[str, Any]] = {}
+        
+        self.business_logic_texts: List[str] = []
+        self.business_logic_metadata: List[Dict[str, Any]] = []
+        
+        self.combined_texts: List[str] = []
+        self.text_types: List[str] = []
+        self.text_identifiers: List[str] = []
+        
         self.is_metadata_loaded = False
+        self.is_business_logic_loaded = False
         self.metadata_upload_time: Optional[datetime] = None
+        self.business_logic_upload_time: Optional[datetime] = None
         
         self._load_from_disk()
 
     def _get_metadata_file(self) -> Path:
-        """Get path to metadata file."""
         return self.storage_path / "metadata.json"
 
+    def _get_business_logic_file(self) -> Path:
+        return self.storage_path / "business_logic.json"
+
     def _get_index_file(self) -> Path:
-        """Get path to vector index file."""
         return self.storage_path / "vector_index.faiss"
 
-    def _get_schema_texts_file(self) -> Path:
-        """Get path to schema texts file."""
-        return self.storage_path / "schema_texts.pkl"
+    def _get_combined_texts_file(self) -> Path:
+        return self.storage_path / "combined_texts.pkl"
 
-    def _get_table_names_file(self) -> Path:
-        """Get path to table names file."""
-        return self.storage_path / "table_names.pkl"
+    def _get_text_metadata_file(self) -> Path:
+        return self.storage_path / "text_metadata.pkl"
 
     def _save_to_disk(self) -> None:
-        """Save all data to disk for persistence."""
         try:
             metadata_to_save = {
                 "table_metadata": self.table_metadata,
@@ -61,11 +68,26 @@ class PersistentEnhancedSchemaVectorStore:
             with open(self._get_metadata_file(), 'w', encoding='utf-8') as f:
                 json.dump(metadata_to_save, f, indent=2, ensure_ascii=False)
             
-            with open(self._get_schema_texts_file(), 'wb') as f:
-                pickle.dump(self.schema_texts, f)
+            business_logic_to_save = {
+                "business_logic_texts": self.business_logic_texts,
+                "business_logic_metadata": self.business_logic_metadata,
+                "is_business_logic_loaded": self.is_business_logic_loaded,
+                "business_logic_upload_time": self.business_logic_upload_time.isoformat() if self.business_logic_upload_time else None
+            }
             
-            with open(self._get_table_names_file(), 'wb') as f:
-                pickle.dump(self.table_names, f)
+            with open(self._get_business_logic_file(), 'w', encoding='utf-8') as f:
+                json.dump(business_logic_to_save, f, indent=2, ensure_ascii=False)
+            
+            combined_data = {
+                "combined_texts": self.combined_texts,
+                "text_types": self.text_types,
+                "text_identifiers": self.text_identifiers,
+                "schema_texts": self.schema_texts,
+                "table_names": self.table_names
+            }
+            
+            with open(self._get_combined_texts_file(), 'wb') as f:
+                pickle.dump(combined_data, f)
             
             if self.index is not None:
                 faiss.write_index(self.index, str(self._get_index_file()))
@@ -76,7 +98,6 @@ class PersistentEnhancedSchemaVectorStore:
             logger.error(f"Failed to save knowledge base to disk: {e}")
 
     def _load_from_disk(self) -> None:
-        """Load data from disk if available."""
         try:
             metadata_file = self._get_metadata_file()
             if metadata_file.exists():
@@ -90,38 +111,185 @@ class PersistentEnhancedSchemaVectorStore:
                 if upload_time_str:
                     self.metadata_upload_time = datetime.fromisoformat(upload_time_str)
             
-            schema_texts_file = self._get_schema_texts_file()
-            if schema_texts_file.exists():
-                with open(schema_texts_file, 'rb') as f:
-                    self.schema_texts = pickle.load(f)
+            business_logic_file = self._get_business_logic_file()
+            if business_logic_file.exists():
+                with open(business_logic_file, 'r', encoding='utf-8') as f:
+                    business_data = json.load(f)
+                
+                self.business_logic_texts = business_data.get("business_logic_texts", [])
+                self.business_logic_metadata = business_data.get("business_logic_metadata", [])
+                self.is_business_logic_loaded = business_data.get("is_business_logic_loaded", False)
+                
+                upload_time_str = business_data.get("business_logic_upload_time")
+                if upload_time_str:
+                    self.business_logic_upload_time = datetime.fromisoformat(upload_time_str)
             
-            table_names_file = self._get_table_names_file()
-            if table_names_file.exists():
-                with open(table_names_file, 'rb') as f:
-                    self.table_names = pickle.load(f)
+            combined_file = self._get_combined_texts_file()
+            if combined_file.exists():
+                with open(combined_file, 'rb') as f:
+                    combined_data = pickle.load(f)
+                
+                self.combined_texts = combined_data.get("combined_texts", [])
+                self.text_types = combined_data.get("text_types", [])
+                self.text_identifiers = combined_data.get("text_identifiers", [])
+                self.schema_texts = combined_data.get("schema_texts", [])
+                self.table_names = combined_data.get("table_names", [])
             
             index_file = self._get_index_file()
             if index_file.exists():
                 self.index = faiss.read_index(str(index_file))
             
-            if self.is_metadata_loaded:
-                logger.info(f"Knowledge base loaded from disk: {len(self.table_names)} tables indexed")
+            if self.is_metadata_loaded or self.is_business_logic_loaded:
+                logger.info(f"Knowledge base loaded from disk: {len(self.table_names)} tables, {len(self.business_logic_texts)} business logic entries")
             
         except Exception as e:
             logger.warning(f"Failed to load knowledge base from disk: {e}")
             self._reset_state()
 
     def _reset_state(self) -> None:
-        """Reset all state variables."""
         self.index = None
         self.schema_texts = []
         self.table_names = []
         self.table_metadata = {}
+        self.business_logic_texts = []
+        self.business_logic_metadata = []
+        self.combined_texts = []
+        self.text_types = []
+        self.text_identifiers = []
         self.is_metadata_loaded = False
+        self.is_business_logic_loaded = False
         self.metadata_upload_time = None
+        self.business_logic_upload_time = None
+
+    def process_business_logic_file(self, file_content: str, file_name: str = "business_logic.txt") -> Dict[str, Any]:
+        try:
+            logger.info(f"Processing business logic file: {file_name}")
+            
+            chunks = self._split_business_logic_content(file_content)
+            
+            if not chunks:
+                raise ValueError("No meaningful content found in business logic file")
+            
+            self.business_logic_texts = []
+            self.business_logic_metadata = []
+            
+            processed_chunks = 0
+            for i, chunk in enumerate(chunks):
+                try:
+                    chunk_metadata = {
+                        "chunk_id": f"business_logic_{i}",
+                        "source_file": file_name,
+                        "content_type": "business_logic",
+                        "chunk_index": i,
+                        "processed_at": datetime.utcnow().isoformat()
+                    }
+                    
+                    self.business_logic_texts.append(chunk)
+                    self.business_logic_metadata.append(chunk_metadata)
+                    processed_chunks += 1
+                    
+                except Exception as e:
+                    logger.warning(f"Error processing business logic chunk {i}: {e}")
+                    continue
+            
+            if not self.business_logic_texts:
+                raise ValueError("No valid business logic chunks found")
+            
+            self.is_business_logic_loaded = True
+            self.business_logic_upload_time = datetime.utcnow()
+            
+            self._rebuild_combined_index()
+            self._save_to_disk()
+            
+            logger.info(f"Successfully processed business logic: {processed_chunks} chunks from {file_name}")
+            
+            return {
+                "success": True,
+                "processed_chunks": processed_chunks,
+                "total_chunks": len(chunks),
+                "upload_time": self.business_logic_upload_time.isoformat(),
+                "message": f"Business logic processed successfully. {processed_chunks} chunks indexed and saved to disk."
+            }
+            
+        except Exception as e:
+            logger.error(f"Error processing business logic: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "message": "Failed to process business logic file"
+            }
+
+    def _split_business_logic_content(self, content: str) -> List[str]:
+        chunks = []
+        
+        paragraphs = [p.strip() for p in content.split('\n\n') if p.strip()]
+        
+        for paragraph in paragraphs:
+            if len(paragraph) < 50:
+                continue
+            
+            if len(paragraph) > 1000:
+                sentences = [s.strip() for s in paragraph.split('.') if s.strip()]
+                current_chunk = ""
+                
+                for sentence in sentences:
+                    if len(current_chunk + sentence) < 800:
+                        current_chunk += sentence + ". "
+                    else:
+                        if current_chunk:
+                            chunks.append(current_chunk.strip())
+                        current_chunk = sentence + ". "
+                
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+            else:
+                chunks.append(paragraph)
+        
+        if not chunks and content.strip():
+            chunk_size = 500
+            overlap = 50
+            words = content.split()
+            
+            for i in range(0, len(words), chunk_size - overlap):
+                chunk_words = words[i:i + chunk_size]
+                chunk = " ".join(chunk_words)
+                if len(chunk.strip()) > 50:
+                    chunks.append(chunk.strip())
+        
+        return chunks
+
+    def _rebuild_combined_index(self) -> None:
+        logger.info("Rebuilding combined vector index...")
+        
+        self.combined_texts = []
+        self.text_types = []
+        self.text_identifiers = []
+        
+        for i, (table_name, schema_text) in enumerate(zip(self.table_names, self.schema_texts)):
+            self.combined_texts.append(schema_text)
+            self.text_types.append("schema")
+            self.text_identifiers.append(table_name)
+        
+        for i, (business_text, metadata) in enumerate(zip(self.business_logic_texts, self.business_logic_metadata)):
+            enhanced_business_text = f"Business Logic: {business_text}"
+            self.combined_texts.append(enhanced_business_text)
+            self.text_types.append("business_logic")
+            self.text_identifiers.append(metadata["chunk_id"])
+        
+        if not self.combined_texts:
+            logger.warning("No texts available for combined index")
+            return
+        
+        logger.info(f"Creating embeddings for {len(self.combined_texts)} texts (schema + business logic)...")
+        embeddings = self.model.encode(self.combined_texts)
+        dim = embeddings.shape[1]
+        
+        self.index = faiss.IndexFlatL2(dim)
+        self.index.add(np.array(embeddings, dtype="float32"))
+        
+        logger.info(f"Combined vector index rebuilt with {len(self.combined_texts)} texts")
 
     def process_metadata(self, metadata_json: Dict[str, Any]) -> Dict[str, Any]:
-        """Process uploaded metadata JSON and build vector store with persistence."""
         try:
             logger.info("Processing metadata JSON with persistence...")
             
@@ -158,18 +326,12 @@ class PersistentEnhancedSchemaVectorStore:
             if not enriched_texts:
                 raise ValueError("No valid table data found in metadata")
             
-            logger.info(f"Creating embeddings for {len(enriched_texts)} tables...")
-            embeddings = self.model.encode(enriched_texts)
-            dim = embeddings.shape[1]
-            
-            self.index = faiss.IndexFlatL2(dim)
-            self.index.add(np.array(embeddings, dtype="float32"))
-            
             self.schema_texts = enriched_texts
             self.table_names = table_names
             self.is_metadata_loaded = True
             self.metadata_upload_time = datetime.utcnow()
             
+            self._rebuild_combined_index()
             self._save_to_disk()
             
             logger.info(f"Successfully processed and saved {processed_tables} tables from metadata")
@@ -191,8 +353,6 @@ class PersistentEnhancedSchemaVectorStore:
             }
 
     def _create_enriched_text(self, table_name: str, schema_info: Dict[str, Any], llm_analysis: Dict[str, Any]) -> str:
-        """Create enriched text representation combining schema and LLM analysis."""
-        
         text_parts = [f"Table: {table_name}"]
         
         if "columns" in schema_info:
@@ -249,7 +409,6 @@ class PersistentEnhancedSchemaVectorStore:
         return "\n".join(text_parts)
 
     def build_from_database(self) -> None:
-        """Fallback method to build from database if no metadata is uploaded."""
         if self.is_metadata_loaded:
             logger.info("Metadata already loaded, skipping database build")
             return
@@ -276,7 +435,6 @@ class PersistentEnhancedSchemaVectorStore:
             logger.info(f"Schema vector store built from database with {len(schemas)} tables")
 
     def search(self, query: str, k: int = 5) -> List[Tuple[str, str, Dict[str, Any]]]:
-        """Search for relevant table schemas with enhanced metadata."""
         if self.index is None:
             self.build_from_database()
             if self.index is None:
@@ -287,44 +445,65 @@ class PersistentEnhancedSchemaVectorStore:
         
         results = []
         for idx in indices[0]:
-            if idx < len(self.table_names):
-                table_name = self.table_names[idx]
-                schema_text = self.schema_texts[idx]
-                metadata = self.table_metadata.get(table_name, {})
-                results.append((table_name, schema_text, metadata))
+            if idx < len(self.combined_texts) if self.combined_texts else len(self.table_names):
+                if self.combined_texts:
+                    text_type = self.text_types[idx]
+                    identifier = self.text_identifiers[idx]
+                    content = self.combined_texts[idx]
+                    
+                    if text_type == "schema":
+                        metadata = self.table_metadata.get(identifier, {})
+                        results.append((identifier, content, metadata))
+                    elif text_type == "business_logic":
+                        business_metadata = None
+                        for meta in self.business_logic_metadata:
+                            if meta["chunk_id"] == identifier:
+                                business_metadata = meta
+                                break
+                        
+                        if business_metadata is None:
+                            business_metadata = {"type": "business_logic", "chunk_id": identifier}
+                        
+                        results.append((identifier, content, business_metadata))
+                else:
+                    table_name = self.table_names[idx]
+                    schema_text = self.schema_texts[idx]
+                    metadata = self.table_metadata.get(table_name, {})
+                    results.append((table_name, schema_text, metadata))
         
         return results
 
     def get_table_details(self, table_name: str) -> Optional[Dict[str, Any]]:
-        """Get detailed information for a specific table."""
         return self.table_metadata.get(table_name)
 
     def get_status(self) -> Dict[str, Any]:
-        """Get status of the knowledge base."""
         return {
             "metadata_loaded": self.is_metadata_loaded,
+            "business_logic_loaded": self.is_business_logic_loaded,
             "upload_time": self.metadata_upload_time.isoformat() if self.metadata_upload_time else None,
+            "business_logic_upload_time": self.business_logic_upload_time.isoformat() if self.business_logic_upload_time else None,
             "total_tables": len(self.table_names),
+            "total_business_logic_chunks": len(self.business_logic_texts),
             "index_built": self.index is not None,
             "storage_path": str(self.storage_path),
             "files_exist": {
                 "metadata": self._get_metadata_file().exists(),
+                "business_logic": self._get_business_logic_file().exists(),
                 "vector_index": self._get_index_file().exists(),
-                "schema_texts": self._get_schema_texts_file().exists(),
-                "table_names": self._get_table_names_file().exists()
+                "combined_texts": self._get_combined_texts_file().exists()
             }
         }
 
     def clear_all(self) -> None:
-        """Clear all metadata and reset the knowledge base."""
         self._reset_state()
         
         try:
             for file_path in [
                 self._get_metadata_file(),
+                self._get_business_logic_file(),
                 self._get_index_file(),
-                self._get_schema_texts_file(),
-                self._get_table_names_file()
+                self._get_combined_texts_file(),
+                self._get_text_metadata_file()
             ]:
                 if file_path.exists():
                     os.remove(file_path)
@@ -334,21 +513,10 @@ class PersistentEnhancedSchemaVectorStore:
             logger.error(f"Error removing files during clear: {e}")
 
     def rebuild_index(self) -> None:
-        """Rebuild the vector index from existing metadata."""
-        if not self.is_metadata_loaded:
-            raise ValueError("No metadata loaded to rebuild index from")
-        
-        if not self.schema_texts:
-            raise ValueError("No schema texts available for index rebuild")
+        if not self.is_metadata_loaded and not self.is_business_logic_loaded:
+            raise ValueError("No metadata or business logic loaded to rebuild index from")
         
         logger.info("Rebuilding vector index...")
-        
-        embeddings = self.model.encode(self.schema_texts)
-        dim = embeddings.shape[1]
-        
-        self.index = faiss.IndexFlatL2(dim)
-        self.index.add(np.array(embeddings, dtype="float32"))
-        
+        self._rebuild_combined_index()
         self._save_to_disk()
-        
-        logger.info(f"Vector index rebuilt and saved with {len(self.schema_texts)} tables")
+        logger.info("Vector index rebuilt and saved")

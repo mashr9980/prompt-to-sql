@@ -3,7 +3,6 @@ from pydantic import BaseModel, Field
 
 
 class MetadataUploadRequest(BaseModel):
-    """Request schema for metadata upload"""
     metadata: Dict[str, Any] = Field(..., description="Complete metadata JSON with tables and analysis")
     
     class Config:
@@ -45,7 +44,6 @@ class MetadataUploadRequest(BaseModel):
 
 
 class MetadataUploadResponse(BaseModel):
-    """Response schema for metadata upload"""
     success: bool = Field(..., description="Whether the upload was successful")
     processed_tables: Optional[int] = Field(None, description="Number of tables processed")
     total_tables: Optional[int] = Field(None, description="Total tables in metadata")
@@ -66,8 +64,28 @@ class MetadataUploadResponse(BaseModel):
         }
 
 
+class BusinessLogicUploadResponse(BaseModel):
+    success: bool = Field(..., description="Whether the upload was successful")
+    processed_chunks: Optional[int] = Field(None, description="Number of chunks processed")
+    total_chunks: Optional[int] = Field(None, description="Total chunks created")
+    upload_time: Optional[str] = Field(None, description="Upload timestamp")
+    message: str = Field(..., description="Status message")
+    error: Optional[str] = Field(None, description="Error message if failed")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "processed_chunks": 15,
+                "total_chunks": 15,
+                "upload_time": "2025-06-17T09:11:30.013073",
+                "message": "Business logic processed successfully. 15 chunks indexed.",
+                "error": None
+            }
+        }
+
+
 class KnowledgeBaseStatus(BaseModel):
-    """Response schema for knowledge base status"""
     metadata_loaded: bool = Field(..., description="Whether metadata is loaded")
     upload_time: Optional[str] = Field(None, description="Last upload time")
     total_tables: int = Field(..., description="Number of tables in knowledge base")
@@ -80,5 +98,22 @@ class KnowledgeBaseStatus(BaseModel):
                 "upload_time": "2025-06-17T09:11:30.013073",
                 "total_tables": 200,
                 "index_built": True
+            }
+        }
+
+
+class BusinessLogicStatus(BaseModel):
+    business_logic_loaded: bool = Field(..., description="Whether business logic is loaded")
+    upload_time: Optional[str] = Field(None, description="Last upload time")
+    total_chunks: int = Field(..., description="Number of business logic chunks")
+    combined_with_schema: bool = Field(..., description="Whether combined with schema data")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "business_logic_loaded": True,
+                "upload_time": "2025-06-17T09:11:30.013073",
+                "total_chunks": 15,
+                "combined_with_schema": True
             }
         }
